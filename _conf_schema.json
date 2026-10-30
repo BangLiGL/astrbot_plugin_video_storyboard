@@ -1,5 +1,5 @@
 {
-  "enabled": {"type":"bool","description":"启用B站视频共读","default":true},
+  "enabled": {"type":"bool","description":"启用真正看懂B站视频","default":true},
   "enabled_groups": {"type":"list","description":"启用群号","default":[],"hint":"留空为所有群。只填群号，不包含平台前缀。"},
   "private_chat": {"type":"bool","description":"同时在私聊启用","default":false},
   "parser_compatibility": {"type":"bool","description":"与 parser 分工处理B站消息","default":true,"hint":"检测到当前会话启用 astrbot_plugin_parser 时，纯链接、纯BV和分享卡片交给 parser；带评论的链接/BV、引用视频由本插件理解，并跳过该消息的 parser 自动解析。关闭后恢复本插件原有的自动读链接行为。"},
