@@ -5,8 +5,8 @@ version: v0.3.2
 author: BangLiGL
 repo: "https://github.com/BangLiGL/astrbot_plugin_video_storyboard"
 astrbot_version: ">=4.29.0,<5"
-support_platforms:
-  - aiocqhttp
+#support_platforms:
+#  - aiocqhttp
 social_link: "https://github.com/BangLiGL"
 tags:
   - 视频理解
