@@ -1,0 +1,16 @@
+{
+  "enabled": {"type":"bool","description":"启用B站视频共读","default":true},
+  "enabled_groups": {"type":"list","description":"启用群号","default":[],"hint":"留空为所有群。只填群号，不包含平台前缀。"},
+  "private_chat": {"type":"bool","description":"同时在私聊启用","default":false},
+  "parser_compatibility": {"type":"bool","description":"与 parser 分工处理B站消息","default":true,"hint":"检测到当前会话启用 astrbot_plugin_parser 时，纯链接、纯BV和分享卡片交给 parser；带评论的链接/BV、引用视频由本插件理解，并跳过该消息的 parser 自动解析。关闭后恢复本插件原有的自动读链接行为。"},
+  "long_video_notice_enabled": {"type":"bool","description":"启用长视频 LLM 人设提醒","default":true,"hint":"未命中缓存且视频达到阈值时，让当前聊天模型沿用本轮人设先说一句需要多看一会儿。提醒失败或超时不阻断视频理解，不额外写入聊天历史。"},
+  "long_video_notice_threshold": {"type":"int","description":"长视频提醒阈值（秒）","default":180,"slider":{"min":30,"max":1800,"step":30},"hint":"达到此时长才尝试提醒。缓存命中不提醒，短视频不提醒；每条消息至多一次。"},
+  "stt_provider_id": {"type":"string","description":"语音识别供应商","default":"","_special":"select_provider_stt","hint":"在 AstrBot 供应商页面配置后从这里选择。留空跟随当前会话的语音识别供应商。有站点字幕时优先使用字幕。"},
+  "vision_provider_id": {"type":"string","description":"后台视频理解模型","default":"","_special":"select_provider","hint":"从 AstrBot 已配置的模型选择，需要支持图片。留空使用全局图片描述模型或当前会话模型；最终回复仍由群聊当前模型和人设完成。"},
+  "sessdata": {"type":"string","description":"B站 SESSDATA（可选）","default":"","secret":true,"hint":"登录凭据，可改善部分视频/字幕的可用性。匿名即可访问的内容不需要填写。"},
+  "storyboard_cells": {"type":"int","description":"后台画面采样格数","default":12,"slider":{"min":4,"max":16,"step":1},"hint":"宫格只交给理解模型，不会发到群里。"},
+  "max_duration_seconds": {"type":"int","description":"允许理解的视频分P时长上限（秒）","default":600},
+  "max_file_mb": {"type":"int","description":"单个下载文件大小上限 MB","default":150},
+  "analysis_timeout": {"type":"int","description":"后台理解超时（秒）","default":240},
+  "cache_hours": {"type":"int","description":"视频资料缓存有效小时数","default":168,"hint":"同视频和同模型配置命中缓存后不重复下载、分镜与转写。群内已记住的事实独立保留，每群最多100条。"}
+}

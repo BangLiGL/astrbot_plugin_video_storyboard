@@ -1,0 +1,14 @@
+Video scene detection / representative-frame storyboard design is based on:
+SAOS-3624/dsh-video-storyboard (MIT), Copyright (c) 2026 SAOS-3624.
+Reference commit: d037c511dbc03a620baf86eb81a61d7e99c4589f
+https://github.com/SAOS-3624/dsh-video-storyboard
+The AstrBot chat integration and Python implementation are original adapter code.
+No upstream video footage, documentation images, model weights or binaries are bundled.
+
+Interaction/workflow research references (no source code copied):
+https://github.com/SodaCodeSave/astrbot_plugin_biliread
+https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary
+
+Compatibility research reference (no parser source bundled):
+https://github.com/Zhalslar/astrbot_plugin_parser
+Reference commit: e226dfd2250b4855ad67c29da7965353ad9e1379
