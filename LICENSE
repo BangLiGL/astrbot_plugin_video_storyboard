@@ -1,5 +1,10 @@
 MIT License
 
+Scope: this license covers the plugin's original source and original MIT-era
+adaptations. The new sampling.py module is an Apache-2.0 adaptation of upstream
+dsh-video-storyboard v0.5.4; its separate license and attribution are provided in
+LICENSES/Apache-2.0.txt, LICENSES/dsh-video-storyboard-NOTICE.txt and NOTICE.
+
 Copyright (c) 2026 Video Storyboard Contributors
 Copyright (c) 2026 SAOS-3624 (dsh-video-storyboard reference design)
 

@@ -5,6 +5,16 @@ https://github.com/SAOS-3624/dsh-video-storyboard
 The AstrBot chat integration and Python implementation are original adapter code.
 No upstream video footage, documentation images, model weights or binaries are bundled.
 
+v0.4.0 additionally adapts scene-score, density-allocation and readability planning
+from dsh-video-storyboard v0.5.4 into sampling.py:
+Reference commit: 4c85689ef90fa1b56d3e6bc924829d5b9c8e11bb
+Copyright 2026 SAOS-3624
+Copyright 2026 BangLiGL (Python adaptation and AstrBot-specific modifications)
+sampling.py is licensed under Apache-2.0. Modifications include OpenCV HSV ranges,
+strict canvas geometry, bounded multi-image plans and AstrBot configuration.
+See LICENSES/Apache-2.0.txt and LICENSES/dsh-video-storyboard-NOTICE.txt.
+All other plugin source retains its existing MIT license unless stated otherwise.
+
 Interaction/workflow research references (no source code copied):
 https://github.com/SodaCodeSave/astrbot_plugin_biliread
 https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary

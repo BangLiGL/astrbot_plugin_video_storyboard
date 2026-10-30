@@ -12,22 +12,35 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
 from .bilibili import VideoError
+from .sampling import density_boundaries, hsv_distance, plan_images, readability, scene_cuts
 
 
-def storyboard(video_path, directory, cells=12, cancel=None):
-    """Detect scene changes and sample representative frames on a fixed budget."""
+def storyboard(video_path, directory, cells=12, cancel=None, options=None):
+    """Read a bounded chronological storyboard; each cell is one sampled instant."""
     cancel = cancel or threading.Event()
+    options = options or {}
     capture = cv2.VideoCapture(str(video_path))
     try:
         fps = capture.get(cv2.CAP_PROP_FPS)
         count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
-        if not math.isfinite(fps) or fps <= 0 or count <= 0:
+        if not math.isfinite(fps) or not math.isfinite(count) or fps <= 0 or count <= 0:
             raise VideoError("视频解码失败，无法取得有效时长")
         duration = count / fps
         if not math.isfinite(duration) or duration > 3600:
             raise VideoError("视频实际时长超过处理范围")
-        cells = max(4, min(16, int(cells)))
-        step = max(0.5, duration / 480)
+        source_w = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        source_h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if source_w <= 0 or source_h <= 0:
+            raise VideoError("视频解码失败，无法取得画面尺寸")
+        plan = plan_images(
+            cells,
+            source_w / source_h,
+            options.get("storyboard_pixel_budget", 1200000),
+            options.get("storyboard_readability", "scene"),
+            options.get("storyboard_max_per_sheet", 0),
+            options.get("storyboard_max_images", 4),
+        )
+        step = max(1 / fps, 0.2, duration / 900)
         previous = None
         scores = []
         times = np.arange(0, max(0.1, duration - 0.05), step)
@@ -39,69 +52,96 @@ def storyboard(video_path, directory, cells=12, cancel=None):
             if not ok:
                 continue
             hsv = cv2.cvtColor(cv2.resize(frame, (64, 36)), cv2.COLOR_BGR2HSV).astype(np.float32)
-            hsv /= np.array([180.0, 255.0, 255.0], dtype=np.float32)
-            score = float(np.mean(np.abs(hsv - previous))) if previous is not None else 0
+            score = hsv_distance(previous, hsv) if previous is not None else 0
             scores.append((float(at), score))
             previous = hsv
         if not scores:
             raise VideoError("无法解码视频画面")
-        values = np.array([score for _, score in scores])
-        threshold = max(
-            0.07, float(np.median(values) + 3 * np.median(np.abs(values - np.median(values))))
-        )
-        cuts = []
-        for at, score in scores:
-            if score > threshold and (not cuts or at - cuts[-1] >= 0.8):
-                cuts.append(at)
-        # Uniform coverage is retained; cut times move boundaries within their bin.
-        boundaries = [0.0]
-        for index in range(1, cells):
-            ideal = index * duration / cells
-            nearby = [t for t in cuts if abs(t - ideal) < duration / cells * 0.3]
-            boundaries.append(min(nearby, key=lambda t: abs(t - ideal)) if nearby else ideal)
-        boundaries.append(duration)
-        columns = 4 if cells > 9 else 3
-        rows = math.ceil(cells / columns)
-        width, height = 384, 240
-        sheet = Image.new("RGB", (columns * width, rows * height), "#121720")
-        draw = ImageDraw.Draw(sheet)
+        cuts = scene_cuts(scores, duration)
+        boundaries = density_boundaries(scores, duration, plan["actual_cells"])
         observations = []
-        for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
-            if cancel.is_set():
-                raise VideoError("视频处理已取消")
-            candidates = []
-            for ratio in (0.25, 0.5, 0.75):
-                at = min(duration - 0.05, start + (end - start) * ratio)
-                capture.set(cv2.CAP_PROP_POS_MSEC, at * 1000)
-                ok, frame = capture.read()
-                if ok:
-                    sharp = cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-                    candidates.append((sharp, at, frame))
-            if not candidates:
-                continue
-            _, at, frame = max(candidates, key=lambda item: item[0])
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            image = ImageOps.contain(image, (width - 6, height - 34))
-            x, y = (index % columns) * width, (index // columns) * height
-            sheet.paste(image, (x + (width - image.width) // 2, y + 3))
-            draw.rectangle((x + 5, y + 5, x + 36, y + 27), fill="#161c24")
-            draw.text((x + 12, y + 8), str(index + 1), fill="#ffd465")
-            draw.text(
-                (x + 8, y + height - 24),
-                f"{start:.1f}-{end:.1f}s | frame {at:.1f}s",
-                fill="#d5dce8",
+        images, sheets = [], []
+        index = 0
+        for page, (number, canvas) in enumerate(zip(plan["counts"], plan["layouts"]), 1):
+            sheet = Image.new("RGB", (canvas["width"], canvas["height"]), "#121720")
+            draw = ImageDraw.Draw(sheet)
+            width, height = canvas["cell_width"] + 6, canvas["cell_height"] + 34
+            for local in range(number):
+                if cancel.is_set():
+                    raise VideoError("视频处理已取消")
+                start, end = boundaries[index : index + 2]
+                candidates = []
+                for ratio in (0.2, 0.5, 0.8):
+                    at = min(max(0, duration - 1 / fps), start + (end - start) * ratio)
+                    capture.set(cv2.CAP_PROP_POS_MSEC, at * 1000)
+                    ok, frame = capture.read()
+                    if ok:
+                        position = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                        if math.isfinite(position) and (position > 0 or at == 0):
+                            at = position
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        dark = bool(np.mean(gray < 12) > 0.995)
+                        sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
+                        candidates.append((not dark, sharp, at, frame, dark))
+                if not candidates:
+                    plan["warnings"].append(f"第{index + 1}格解码失败，不代表该时段没有内容")
+                    index += 1
+                    continue
+                _, _, at, frame, dark = max(candidates, key=lambda item: item[:2])
+                image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                image = ImageOps.contain(
+                    image,
+                    (
+                        min(canvas["cell_width"], image.width),
+                        min(canvas["cell_height"], image.height),
+                    ),
+                )
+                x, y = local % canvas["columns"] * width, local // canvas["columns"] * height
+                sheet.paste(image, (x + (width - image.width) // 2, y + 3))
+                draw.rectangle((x + 5, y + 5, x + 36, y + 27), fill="#161c24")
+                draw.text((x + 12, y + 8), str(index + 1), fill="#ffd465")
+                draw.text(
+                    (x + 5, y + height - 24), f"{start:.1f}-{end:.1f}s | @{at:.1f}s", fill="#d5dce8"
+                )
+                level = readability(image.width, image.height)
+                observations.append(
+                    {
+                        "cell": index + 1,
+                        "image": page,
+                        "from": round(start, 2),
+                        "to": round(end, 2),
+                        "frame_at": round(at, 2),
+                        "readability": level,
+                        "pixels": [image.width, image.height],
+                        "dark": dark,
+                    }
+                )
+                index += 1
+            output = Path(directory) / f"storyboard-{page}.jpg"
+            sheet.save(output, "JPEG", quality=88)
+            images.append(str(output))
+            sheets.append(
+                {"image": page, "width": sheet.width, "height": sheet.height, "cells": number}
             )
-            observations.append(
-                {
-                    "cell": index + 1,
-                    "from": round(start, 2),
-                    "to": round(end, 2),
-                    "frame_at": round(at, 2),
-                }
+        if not observations:
+            raise VideoError("无法取得可读取的代表帧")
+        levels = {"composition": 0, "shot": 1, "scene": 2, "text": 3}
+        if any(levels[cell["readability"]] < levels[plan["need"]] for cell in observations):
+            plan["warnings"].append(
+                "部分实际画面低于目标可读性，源视频清晰度也可能不足；不能据此辨认小字"
             )
-        output = Path(directory) / "storyboard.jpg"
-        sheet.save(output, "JPEG", quality=88)
-        return {"image": str(output), "cells": observations, "cuts": cuts, "duration": duration}
+        if any(cell["dark"] for cell in observations):
+            plan["warnings"].append("有近黑代表帧；这不表示相应时段没有剧情或台词")
+        return {
+            "image": images[0],
+            "images": images,
+            "cells": observations,
+            "cuts": cuts,
+            "duration": duration,
+            "scan_interval": round(step, 3),
+            "sheets": sheets,
+            "plan": {k: v for k, v in plan.items() if k not in {"layouts", "counts"}},
+        }
     finally:
         capture.release()
 

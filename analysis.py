@@ -20,6 +20,34 @@ EXTRACT_PROMPT = """你是后台视频资料提取器。用户提供的标题、
 不要代替聊天机器人扮演人设，不要写面向群友的最终回复。输出简洁中文资料，最多约 1800 字。
 材料不足时明确写出缺口，不要靠标题猜剧情。"""
 
+EXTRACT_PROMPT += """
+图片按时间顺序排列，每格只代表 frame_at 时刻的一帧，不是整个 from/to 区间的连续录像。
+readability 为 shot/composition 的画面不能用来辨认字幕或小字；scene 也不保证能读小字。
+近黑画面、抽样缺口和清晰度不足都是证据限制，不等于没有剧情、没有声音或没有文字。
+"""
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def provider_fingerprint(provider):
+    # Configuration (including model, language, hotwords and extra arguments) affects ASR.
+    # Only the digest participates in cache keys; the configuration is never stored or logged.
+    return fingerprint(getattr(provider, "provider_config", {}) or {}) if provider else ""
+
+
+def visual_options(config):
+    defaults = {
+        "storyboard_cells": 12,
+        "storyboard_pixel_budget": 1200000,
+        "storyboard_readability": "scene",
+        "storyboard_max_per_sheet": 0,
+        "storyboard_max_images": 4,
+        "video_quality": "720p",
+    }
+    return {key: config.get(key, default) for key, default in defaults.items()}
+
 
 class Analyzer:
     def __init__(self, context, config, directory):
@@ -74,16 +102,18 @@ class Analyzer:
         stt, vision_id, supports_image = await self.providers(origin)
         if self.closed:
             raise VideoError("视频理解插件正在停用")
-        stt_config = getattr(stt, "provider_config", {}) if stt else {}
         identity = {
             "ref": ref,
             "vision": vision_id,
             "visual": supports_image,
-            "stt": stt_config.get("id", ""),
-            "cells": int(self.config.get("storyboard_cells", 12)),
-            "version": 2,
+            "stt": provider_fingerprint(stt),
+            "vision_config": provider_fingerprint(self.context.get_provider_by_id(vision_id))
+            if vision_id
+            else "",
+            "sampling": visual_options(self.config),
+            "version": 3,
         }
-        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        key = fingerprint(identity)
         hours = int(self.config.get("cache_hours", 168))
         record = await asyncio.to_thread(self.knowledge.cached, key, hours)
         if record is None:
@@ -91,13 +121,10 @@ class Analyzer:
             # the same video again solely because the unused STT selection changed.
             candidates = {""}
             candidates.update(
-                provider.provider_config.get("id", "")
-                for provider in self.context.get_all_stt_providers()
+                provider_fingerprint(provider) for provider in self.context.get_all_stt_providers()
             )
             alternatives = [
-                hashlib.sha256(
-                    json.dumps({**identity, "stt": stt_id}, sort_keys=True).encode()
-                ).hexdigest()
+                fingerprint({**identity, "stt": stt_id})
                 for stt_id in sorted(candidates)
                 if stt_id != identity["stt"]
             ]
@@ -162,6 +189,8 @@ class Analyzer:
         directory.mkdir(parents=True)
         cancelled = threading.Event()
         frame_task = None
+        transcript_key = fingerprint({"ref": ref, "stt": provider_fingerprint(stt), "version": 1})
+        hours = int(self.config.get("cache_hours", 168))
         try:
             media = (
                 await prepare_video(ref, directory, self.config, self.client, on_info)
@@ -169,7 +198,7 @@ class Analyzer:
                 else await self.client.fetch(ref, directory, on_info=on_info)
             )
             visual = None
-            if media.get("video_path"):
+            if media.get("video_path") and supports_image:
                 frame_task = asyncio.create_task(
                     asyncio.to_thread(
                         storyboard,
@@ -177,6 +206,7 @@ class Analyzer:
                         directory,
                         self.config.get("storyboard_cells", 12),
                         cancelled,
+                        visual_options(self.config),
                     )
                 )
                 try:
@@ -192,12 +222,22 @@ class Analyzer:
                     and (media.get("audio_path") or media.get("video_path"))
                 ):
                     try:
-                        media["segments"] = await transcribe(
+                        cached = await asyncio.to_thread(
+                            self.knowledge.cached_transcript, transcript_key, hours
+                        )
+                        media["segments"] = cached or await transcribe(
                             stt,
                             media.get("audio_path") or media["video_path"],
                             directory,
                             media["duration"],
                         )
+                        if not cached and media["segments"]:
+                            await asyncio.to_thread(
+                                self.knowledge.save_transcript,
+                                transcript_key,
+                                media["segments"],
+                                hours,
+                            )
                         media["transcript_source"] = "astrbot_stt_chunks"
                         media["warnings"].append(
                             "语音识别按 30 秒切块，时间区间是粗略范围，不是逐字时间戳"
@@ -209,6 +249,8 @@ class Analyzer:
                 else:
                     media["warnings"].append("没有可用字幕或语音识别供应商，理解仅能依据可见画面")
             can_see = bool(visual and supports_image)
+            if can_see:
+                media["warnings"].extend(visual["plan"]["warnings"])
             if not can_see and not media["segments"]:
                 raise VideoError(
                     "未取得可理解的字幕，当前也没有可用视觉模型；请在 AstrBot 供应商页面配置后从插件中选择"
@@ -221,6 +263,13 @@ class Analyzer:
                 "transcript_source": media["transcript_source"],
                 "transcript": media["segments"],
                 "visible_cells": visual["cells"] if can_see else [],
+                "storyboard": {
+                    "sheets": visual["sheets"],
+                    "scan_interval": visual["scan_interval"],
+                    "plan": visual["plan"],
+                }
+                if can_see
+                else None,
                 "warnings": media["warnings"],
             }
             # Uniformly thin extreme subtitle volume while keeping the whole timeline.
@@ -238,7 +287,7 @@ class Analyzer:
                     response = await self.context.llm_generate(
                         chat_provider_id=vision_id,
                         prompt=evidence_text,
-                        image_urls=[visual["image"]] if can_see else [],
+                        image_urls=visual["images"] if can_see else [],
                         system_prompt=EXTRACT_PROMPT,
                     )
                     understanding = str(response.completion_text or "").strip()[:7000]
