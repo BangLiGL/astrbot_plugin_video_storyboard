@@ -1,7 +1,7 @@
 name: astrbot_plugin_video_storyboard
 display_name: B站视频共读
 desc: 自动理解群聊中的BV号和B站分享，后台分镜与语音识别，将视频内容融入机器人原有人设聊天并支持后续追问。
-version: v0.3.0
+version: v0.3.1
 author: Video Storyboard Contributors
 repo: "https://github.com/BangLiGL/astrbot_plugin_video_storyboard"
 astrbot_version: ">=4.29.0,<5"

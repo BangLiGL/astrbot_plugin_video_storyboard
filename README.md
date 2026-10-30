@@ -1,5 +1,9 @@
 # 真正看懂B站视频
 
+<p align="center">
+  <img src="logo.png" width="160" height="160" alt="真正看懂B站视频插件图标">
+</p>
+
 把一段视频压成“代表帧宫格 + 带时间信息的字幕或语音文本”，让机器人用有限的模型输入理解内容，再带着你为它设置的人格自然接话。
 
 本插件由 [dsh-video-storyboard](https://github.com/SAOS-3624/dsh-video-storyboard) 的分镜理解方案移植、改写而来：将原先面向 DSH 的流程改为适合 AstrBot 的 Python 实现，并接入 AstrBot 已有的模型、语音识别、会话和人格系统。画面读取沿用原项目“用少量代表帧覆盖整段视频”的思路，聊天交互则参考 [BiliRead](https://github.com/SodaCodeSave/astrbot_plugin_biliread)，把读到的资料交回机器人，让它按当前人格表达感受、共情、接梗、吐槽或评价。
@@ -14,11 +18,11 @@
 
 分镜是后台的阅读材料，群友看到的是机器人带着当前人格做出的自然回应。长视频可以先生成一句同样带人格的等待提醒，再继续理解内容。
 
-**当前版本：v0.3.0 · AstrBot ≥4.29.0、<5 · Python 实现 · MIT**
+**当前版本：v0.3.1 · AstrBot ≥4.29.0、<5 · Python 实现 · MIT**
 
 ## 快速开始
 
-1. 在 AstrBot 的插件管理中从链接安装，填写 `https://github.com/BangLiGL/astrbot_plugin_video_storyboard`；也支持本地 ZIP 安装。
+1. **插件市场安装**：打开 **AstrBot → 插件管理 → 插件市场**，搜索“真正看懂B站视频”或“B站视频共读”后安装。如果市场索引暂未同步、搜索不到，可选择**从链接安装**，填写 `https://github.com/BangLiGL/astrbot_plugin_video_storyboard`；也支持本地 ZIP 安装。
 2. 在 **AstrBot → 服务供应商** 配置支持图片的模型。需要识别无字幕视频时，再配置语音识别供应商。
 3. 打开本插件设置，从下拉列表选择 **后台视频理解模型** 和 **语音识别供应商**。最终聊天仍由当前会话的聊天模型回复。
 4. 默认在所有群启用；可填写启用群号限制范围。私聊默认关闭，可自行开启。
