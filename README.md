@@ -1,0 +1,2 @@
+# astrbot_plugin_video_storyboard
+真正看懂B站视频：代表帧宫格结合字幕与ASR，以更少的模型输入理解视频，并沿用当前人格自然聊天。
