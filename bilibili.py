@@ -254,12 +254,20 @@ class BiliClient:
                 preferred = [
                     v for v in videos if str(v.get("codecs", "")).startswith("avc")
                 ] or videos
-                bounded = [v for v in preferred if int(v.get("height", 9999)) <= 480]
+                target_height = {"360p": 360, "720p": 720, "1080p": 1080}.get(
+                    self.config.get("video_quality", "720p"), 720
+                )
+                bounded = [v for v in preferred if int(v.get("height", 9999)) <= target_height]
                 chosen = (
                     max(bounded, key=lambda v: v.get("height", 0))
                     if bounded
                     else min(preferred, key=lambda v: v.get("height", 9999))
                 )
+                result["download_height"] = int(chosen.get("height") or 0)
+                if result["download_height"] and result["download_height"] < target_height:
+                    result["warnings"].append(
+                        f"本次可取视频为{result['download_height']}p，低于所选{target_height}p；不能保证读清小字"
+                    )
                 result["video_path"] = await self._stream(
                     chosen, max_bytes, directory / "video.mp4"
                 )

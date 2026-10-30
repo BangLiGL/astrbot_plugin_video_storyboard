@@ -30,6 +30,9 @@ class Knowledge:
                     scope TEXT NOT NULL, key TEXT NOT NULL, record TEXT NOT NULL, seen REAL NOT NULL,
                     PRIMARY KEY(scope,key)
                 );
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    key TEXT PRIMARY KEY, segments TEXT NOT NULL, created REAL NOT NULL
+                );
             """)
 
     @contextmanager
@@ -92,6 +95,30 @@ class Knowledge:
                     if record.get("transcript_source") == "bilibili_subtitle":
                         return key, record
         return None
+
+    def cached_transcript(self, key, hours=168):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT segments FROM transcripts WHERE key=? AND created>?",
+                (key, time.time() - hours * 3600),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_transcript(self, key, segments, hours=168):
+        # Only absolute chunk times and text; never persist media paths or provider config.
+        clean = [
+            {field: row[field] for field in ("from", "to", "text", "timing") if field in row}
+            for row in segments[:12000]
+        ]
+        with self.connect() as db:
+            db.execute("DELETE FROM transcripts WHERE created<?", (time.time() - hours * 3600,))
+            db.execute(
+                "INSERT OR REPLACE INTO transcripts VALUES(?,?,?)",
+                (key, json.dumps(clean, ensure_ascii=False), time.time()),
+            )
+            db.execute(
+                "DELETE FROM transcripts WHERE key NOT IN (SELECT key FROM transcripts ORDER BY created DESC LIMIT 200)"
+            )
 
     def remember(self, origin, key, record):
         scope = self.scope(origin)
