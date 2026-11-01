@@ -249,6 +249,8 @@ class BiliClient:
             dash = streams.get("dash") or {}
             videos = dash.get("video") or []
             audio = dash.get("audio") or []
+            if audio and result["segments"]:
+                result["audio_state"] = "available_not_downloaded"
             max_bytes = int(self.config.get("max_file_mb", 150)) * 1048576
             if videos:
                 preferred = [
@@ -272,12 +274,16 @@ class BiliClient:
                     chosen, max_bytes, directory / "video.mp4"
                 )
                 if audio and not result["segments"]:
+                    result["audio_state"] = "unavailable"
                     chosen_audio = min(audio, key=lambda a: a.get("bandwidth", 9999999))
                     result["audio_path"] = await self._stream(
                         chosen_audio,
                         min(max_bytes, 50 * 1048576),
                         directory / "audio.m4a",
                     )
+                    result.pop(
+                        "audio_state", None
+                    )  # Probe the file before claiming it is readable.
             elif len(streams.get("durl") or []) == 1:
                 result["video_path"] = await self._stream(
                     streams["durl"][0], max_bytes, directory / "video.mp4"

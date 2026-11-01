@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 SAOS-3624
 # Copyright 2026 BangLiGL
-"""Python adaptations of upstream scan/density/readability planning (v0.5.4).
+"""Python adaptations of upstream scan/density/readability planning (v0.6.2).
 
 Modified for OpenCV HSV ranges, bounded AstrBot chat images, and exact canvas
 geometry. See NOTICE and LICENSES/Apache-2.0.txt. No DSH token pricing is assumed.
@@ -22,28 +22,73 @@ def hsv_distance(previous, current):
     return float(np.mean(hue * saturation + delta[..., 1] / 255 + delta[..., 2] / 255) / 3)
 
 
-def scene_cuts(scores, duration):
+def normalize_changes(scores, means, bars=0, offset=1):
+    """Keep thresholds on raw scores; compensate only comparisons for dark/letterboxed scenes."""
+    content = max(0.5, 1 - bars)
+    return [
+        (
+            at,
+            value * min(3, max(1, 160 / max(20, means[min(i + offset, len(means) - 1)]))) / content,
+        )
+        for i, (at, value) in enumerate(scores)
+    ]
+
+
+def scene_cuts(scores, duration, normalized=None, long_scores=None):
     if not scores:
         return []
-    values = np.array([score for _, score in scores], dtype=float)
+    raw = np.array([score for _, score in scores], dtype=float)
+    values = np.array([score for _, score in (normalized or scores)], dtype=float)
+    times = np.array([at for at, _ in scores])
     baseline = float(np.median(values))
     target = min(len(values) * 0.25, duration / max(0.5, min(1.5, duration / 60)))
     rank = max(0, min(len(values) - 1, int(len(values) - target)))
-    threshold = max(0.04, float(np.sort(values)[rank]))
+    threshold = max(0.04, float(np.sort(raw)[rank]))
+    step = float(np.median(np.diff(times))) if len(times) > 1 else 0.04
     candidates = []
-    for index, (at, value) in enumerate(scores):
+    for index, (at, _) in enumerate(scores):
+        value = values[index]
         neighbours = np.concatenate(
             (values[max(0, index - 8) : index], values[index + 1 : index + 9])
         )
         local = float(np.median(neighbours)) if len(neighbours) else baseline
         spike = max(0.025, min(local, baseline) * 3)
-        if value > threshold + 1e-6 or value > spike:
-            if candidates and at - candidates[-1][0] < 0.35:
+        if value >= threshold and value > 0.04 or value > spike:
+            # A cut is isolated; sustained camera motion is not a series of hard cuts.
+            lo = values[np.searchsorted(times, at - 0.18) : np.searchsorted(times, at - 0.06)]
+            hi = values[np.searchsorted(times, at + 0.06) : np.searchsorted(times, at + 0.18)]
+            if any(
+                len(side) and np.mean(side >= max(0.006, value * 0.5)) >= 0.6 for side in (lo, hi)
+            ):
+                continue
+            if candidates and at - candidates[-1][0] <= step * 1.5:
                 if value > candidates[-1][1]:
                     candidates[-1] = (at, value)
             elif 0 < at < duration:
                 candidates.append((at, value))
-    return [float(at) for at, _ in candidates]
+    # Regular two-frame animation changes are not necessarily edits.
+    if (
+        len(candidates) > 5
+        and np.median(np.diff([t for t, _ in candidates])) < step * 3.5
+        and np.mean(raw) < 0.117
+    ):
+        candidates = []
+    cuts = [float(at) for at, _ in candidates]
+    # A short isolated peak in the 0.4s difference curve reveals a dissolve/fade.
+    if long_scores:
+        groups = []
+        for at, value in long_scores:
+            i = min(len(times) - 1, int(np.searchsorted(times, at)))
+            if value > max(0.025, threshold * 0.65) and values[i] < max(0.025, threshold * 0.6):
+                if not groups or at - groups[-1][-1][0] > max(0.2, step * 1.5):
+                    groups.append([])
+                groups[-1].append((at, value))
+        for group in groups:
+            span = group[-1][0] - group[0][0]
+            at = (group[0][0] + group[-1][0]) / 2 - 0.2
+            if 0.15 <= span <= 2.5 and 0 < at < duration and all(abs(at - t) > 0.5 for t in cuts):
+                cuts.append(float(at))
+    return sorted(cuts)
 
 
 def density_boundaries(scores, duration, count):
@@ -99,13 +144,13 @@ def layout(count, aspect, budget):
     while low < high:
         height = (low + high + 1) // 2
         width = max(1, int(height * aspect))
-        if (width + 6) * columns * (height + 34) * rows <= budget:
+        if (width + 6) * columns * ((height + 34) * rows + 24) <= budget:
             low = height
         else:
             high = height - 1
     cell_h = low
     # Even a one-pixel-high panoramic frame must fit the budget with labels.
-    max_width = budget // (columns * rows * (cell_h + 34)) - 6
+    max_width = budget // (columns * (rows * (cell_h + 34) + 24)) - 6
     cell_w = max(1, min(int(cell_h * aspect), max_width))
     return {
         "columns": columns,
@@ -113,7 +158,7 @@ def layout(count, aspect, budget):
         "cell_width": cell_w,
         "cell_height": cell_h,
         "width": columns * (cell_w + 6),
-        "height": rows * (cell_h + 34),
+        "height": rows * (cell_h + 34) + 24,
     }
 
 
