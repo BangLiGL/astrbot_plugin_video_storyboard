@@ -15,6 +15,15 @@ strict canvas geometry, bounded multi-image plans and AstrBot configuration.
 See LICENSES/Apache-2.0.txt and LICENSES/dsh-video-storyboard-NOTICE.txt.
 All other plugin source retains its existing MIT license unless stated otherwise.
 
+v0.5.0 additionally adapts selected scan, normalization, transition filtering and
+bounded frame-extraction concepts through upstream v0.6.2 into sampling.py and decode.py.
+Upstream tag: v0.6.2; inspected main: b644b99a0a3b8eb69e4d6ce7e8c01af06523949e
+Copyright 2026 SAOS-3624
+Copyright 2026 BangLiGL (Python adaptation and AstrBot-specific modifications)
+Both modules are licensed under Apache-2.0. Local modifications include packaged
+FFmpeg subprocess lifecycle, bounded scan/batch resources, decoded-PTS matching,
+fixed AstrBot image budgets and cancellation. No DSH/harness or WebUI is bundled.
+
 Interaction/workflow research references (no source code copied):
 https://github.com/SodaCodeSave/astrbot_plugin_biliread
 https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary

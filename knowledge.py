@@ -70,6 +70,8 @@ class Knowledge:
                 "duration",
                 "understanding",
                 "transcript_source",
+                "transcript_status",
+                "audio_state",
                 "warnings",
                 "visual",
             )
@@ -92,7 +94,10 @@ class Knowledge:
                 ).fetchone()
                 if row:
                     record = json.loads(row[0])
-                    if record.get("transcript_source") == "bilibili_subtitle":
+                    if record.get("transcript_source") in {
+                        "bilibili_subtitle",
+                        "embedded_subtitle",
+                    }:
                         return key, record
         return None
 

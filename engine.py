@@ -12,7 +12,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
 from .bilibili import VideoError
-from .sampling import density_boundaries, hsv_distance, plan_images, readability, scene_cuts
+from .decode import extract_frames, scan_video
+from .sampling import density_boundaries, plan_images, readability
 
 
 def storyboard(video_path, directory, cells=12, cancel=None, options=None):
@@ -40,45 +41,53 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
             options.get("storyboard_max_per_sheet", 0),
             options.get("storyboard_max_images", 4),
         )
-        step = max(1 / fps, 0.2, duration / 900)
-        previous = None
-        scores = []
-        times = np.arange(0, max(0.1, duration - 0.05), step)
-        for at in times:
-            if cancel.is_set():
-                raise VideoError("视频处理已取消")
-            capture.set(cv2.CAP_PROP_POS_MSEC, float(at) * 1000)
-            ok, frame = capture.read()
-            if not ok:
-                continue
-            hsv = cv2.cvtColor(cv2.resize(frame, (64, 36)), cv2.COLOR_BGR2HSV).astype(np.float32)
-            score = hsv_distance(previous, hsv) if previous is not None else 0
-            scores.append((float(at), score))
-            previous = hsv
-        if not scores:
-            raise VideoError("无法解码视频画面")
-        cuts = scene_cuts(scores, duration)
-        boundaries = density_boundaries(scores, duration, plan["actual_cells"])
+        capture.release()
+        scan = scan_video(video_path, fps, duration, cancel)
+        cuts = scan["cuts"]
+        boundaries = density_boundaries(scan["scores"], duration, plan["actual_cells"])
+        # Avoid selecting on a detected transition: use the largest shot overlap per interval.
+        requests = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            marks = [start, *(at for at in cuts if start < at < end), end]
+            a, b = max(zip(marks, marks[1:]), key=lambda pair: pair[1] - pair[0])
+            requests.append(
+                [min(max(0, duration - 1 / fps), a + (b - a) * r) for r in (0.25, 0.5, 0.75)]
+            )
         observations = []
         images, sheets = [], []
         index = 0
         for page, (number, canvas) in enumerate(zip(plan["counts"], plan["layouts"]), 1):
+            page_start, page_end = boundaries[index], boundaries[index + number]
+            targets = [at for group in requests[index : index + number] for at in group]
+            try:
+                frames = extract_frames(
+                    video_path,
+                    targets,
+                    (min(source_w, canvas["cell_width"]), min(source_h, canvas["cell_height"])),
+                    source_w / source_h,
+                    cancel,
+                )
+            except VideoError:
+                if cancel.is_set():
+                    raise
+                plan["warnings"].append(f"第{page}张图取帧失败，未取得的画面不能当作已看过")
+                frames = {}
             sheet = Image.new("RGB", (canvas["width"], canvas["height"]), "#121720")
             draw = ImageDraw.Draw(sheet)
+            draw.text(
+                (6, 5),
+                f"{page_start:.1f}-{page_end:.1f}s  |  {page}/{len(plan['counts'])}",
+                fill="#ffd465",
+            )
             width, height = canvas["cell_width"] + 6, canvas["cell_height"] + 34
             for local in range(number):
                 if cancel.is_set():
                     raise VideoError("视频处理已取消")
                 start, end = boundaries[index : index + 2]
                 candidates = []
-                for ratio in (0.2, 0.5, 0.8):
-                    at = min(max(0, duration - 1 / fps), start + (end - start) * ratio)
-                    capture.set(cv2.CAP_PROP_POS_MSEC, at * 1000)
-                    ok, frame = capture.read()
-                    if ok:
-                        position = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
-                        if math.isfinite(position) and (position > 0 or at == 0):
-                            at = position
+                for target in requests[index]:
+                    if target in frames:
+                        at, frame = frames[target]
                         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                         dark = bool(np.mean(gray < 12) > 0.995)
                         sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
@@ -96,7 +105,7 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
                         min(canvas["cell_height"], image.height),
                     ),
                 )
-                x, y = local % canvas["columns"] * width, local // canvas["columns"] * height
+                x, y = local % canvas["columns"] * width, 24 + local // canvas["columns"] * height
                 sheet.paste(image, (x + (width - image.width) // 2, y + 3))
                 draw.rectangle((x + 5, y + 5, x + 36, y + 27), fill="#161c24")
                 draw.text((x + 12, y + 8), str(index + 1), fill="#ffd465")
@@ -111,6 +120,7 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
                         "from": round(start, 2),
                         "to": round(end, 2),
                         "frame_at": round(at, 2),
+                        "timing": "decoded_pts",
                         "readability": level,
                         "pixels": [image.width, image.height],
                         "dark": dark,
@@ -121,7 +131,14 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
             sheet.save(output, "JPEG", quality=88)
             images.append(str(output))
             sheets.append(
-                {"image": page, "width": sheet.width, "height": sheet.height, "cells": number}
+                {
+                    "image": page,
+                    "width": sheet.width,
+                    "height": sheet.height,
+                    "cells": number,
+                    "from": round(page_start, 2),
+                    "to": round(page_end, 2),
+                }
             )
         if not observations:
             raise VideoError("无法取得可读取的代表帧")
@@ -132,13 +149,17 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
             )
         if any(cell["dark"] for cell in observations):
             plan["warnings"].append("有近黑代表帧；这不表示相应时段没有剧情或台词")
+        if scan["rate"] < min(fps, 24):
+            plan["warnings"].append("长视频扫描已按资源上限降采样，极短镜头可能遗漏")
         return {
             "image": images[0],
             "images": images,
             "cells": observations,
             "cuts": cuts,
             "duration": duration,
-            "scan_interval": round(step, 3),
+            "scan_interval": round(scan["interval"], 3),
+            "scan_frames": scan["frames"],
+            "letterbox_fraction": scan["bars"],
             "sheets": sheets,
             "plan": {k: v for k, v in plan.items() if k not in {"layouts", "counts"}},
         }
