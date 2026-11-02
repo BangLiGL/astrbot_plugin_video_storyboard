@@ -12,6 +12,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .analysis import Analyzer
 from .bilibili import VideoError
+from .cooperation import stopped, wake_native_chat
 from .routing import component_text, decide, parser_available, skip_parser
 
 FOLLOWUP = re.compile(
@@ -27,6 +28,22 @@ CHAT_GUIDANCE = """
 不要展示后台分镜图、格子编号、分析清单、处理进度或供应商信息，也不要机械复述整份资料。
 用户追问具体内容时再展开，材料里没有的细节不要编造。
 """
+
+EVIDENCE_MARKER = "<!-- astrbot_video_storyboard_evidence -->"
+DEFAULT_NOTICE_PROMPT = (
+    "只按已注入的当前人格说一句简短自然的等待提醒：视频有点长，需要多看一会儿。"
+    "只输出这句话，最多60字，不解释分镜、工具或供应商。"
+)
+DEFAULT_NOTICE_TEXT = "这段视频有点长，我需要多看一会儿，稍等一下～"
+
+
+def notice_template(text, duration):
+    # Literal replacement preserves arbitrary braces/JSON in user-authored prompts.
+    return (
+        str(text)
+        .replace("{duration_seconds}", str(round(duration)))
+        .replace("{duration_minutes}", f"{duration / 60:.1f}")
+    )
 
 
 class VideoStoryboardPlugin(Star):
@@ -94,6 +111,15 @@ class VideoStoryboardPlugin(Star):
         contexts = copy.deepcopy(persona.get("_begin_dialogs_processed") or [])
         if not system_prompt.strip() and not contexts:
             raise VideoError("当前人格没有可注入的提示或预设对话，跳过等待提醒")
+        # Reuse resolved-persona enrichments without adopting a stale request persona.
+        prepared_prompt = str(getattr(req, "system_prompt", "") or "")
+        if system_prompt.strip() and system_prompt in prepared_prompt:
+            system_prompt = prepared_prompt
+        instruction = notice_template(
+            self.config.get("long_video_notice_prompt", DEFAULT_NOTICE_PROMPT)
+            or DEFAULT_NOTICE_PROMPT,
+            duration,
+        )[:4000]
         provider_id = await self.context.get_current_chat_provider_id(umo=origin)
         return await self.context.llm_generate(
             chat_provider_id=provider_id,
@@ -101,25 +127,33 @@ class VideoStoryboardPlugin(Star):
             contexts=contexts,
             prompt=(
                 f"当前用户请你看一段约{round(duration)}秒的视频，后台还在读取。"
-                "只按已注入的当前人格说一句简短自然的等待提醒：视频有点长，需要多看一会儿。"
+                + instruction
+                + "\n"
                 "这是处理前的提醒，不能声称已经看完、不能评价剧情、不要编造等待时长。"
-                "只输出这句话，最多60字，不解释分镜、工具或供应商。"
             ),
         )
 
     async def long_video_notice(self, event, req, duration):
-        if not self.config.get("long_video_notice_enabled", True):
+        if not self.config.get("long_video_notice_enabled", True) or stopped(event):
             return
         if event.get_extra("bili_chat_notice_started"):
             return
         event.set_extra("bili_chat_notice_started", True)
         try:
-            response = await asyncio.wait_for(
-                self.generate_long_notice(event, req, duration),
-                timeout=12,
-            )
-            text = " ".join(str(response.completion_text or "").split()).strip()[:120]
-            if text:
+            mode = self.config.get("long_video_notice_mode", "llm")
+            if mode == "fixed":
+                text = notice_template(
+                    self.config.get("long_video_notice_text", DEFAULT_NOTICE_TEXT), duration
+                ).strip()[:500]
+            elif mode == "llm":
+                response = await asyncio.wait_for(
+                    self.generate_long_notice(event, req, duration),
+                    timeout=12,
+                )
+                text = " ".join(str(response.completion_text or "").split()).strip()[:120]
+            else:
+                return
+            if text and not stopped(event):
                 await event.send(event.plain_result(text))
         except asyncio.CancelledError:
             raise
@@ -128,12 +162,11 @@ class VideoStoryboardPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
     async def on_message(self, event: AstrMessageEvent):
-        """A shared BV starts the normal chat pipeline without a visible tool phase."""
-        if not self.allowed(event):
+        """Record video references, leaving reply ownership to the existing pipeline."""
+        if not self.allowed(event) or stopped(event):
             return
         route = self.route(event)
         if route["passive"]:
-            event.should_call_llm(True)
             return
         text = event.get_message_str()
         refs = route["refs"]
@@ -146,36 +179,25 @@ class VideoStoryboardPlugin(Star):
             return
         event.set_extra("bili_chat_refs", refs)
         event.set_extra("bili_chat_memories", remembered)
-        # This flag disables only AstrBot's second, default request, not the one yielded here.
-        event.should_call_llm(True)
-        manager = self.context.conversation_manager
-        origin = event.unified_msg_origin
-        cid = await manager.get_curr_conversation_id(origin)
-        if not cid:
-            cid = await manager.new_conversation(origin)
-        conversation = await manager.get_conversation(origin, cid)
-        if not conversation:
-            logger.warning("bili_chat: conversation could not be resolved")
-            event.should_call_llm(False)
-            return
         if route["takeover"]:
             skip_parser(event)
-        # Binding the conversation lets AstrBot load its history and selected persona.
-        yield event.request_llm(
-            prompt=event.get_message_str() or "群友分享了一个B站视频", conversation=conversation
-        )
+        wake_native_chat(self.context, self.config, event)
 
-    @filter.on_llm_request()
+    @filter.on_llm_request(priority=-1000000)
     async def inject_video_knowledge(self, event: AstrMessageEvent, req: ProviderRequest):
         """Provide evidence to the existing request; leave the persona and history intact."""
-        if not self.allowed(event):
+        if not self.allowed(event) or stopped(event):
             return
         route = self.route(event)
         if route["passive"]:
             return
-        if event.get_extra("bili_chat_injected"):
+        parts = list(getattr(req, "extra_user_content_parts", None) or [])
+        if any(
+            EVIDENCE_MARKER
+            in str(part.get("text", "") if isinstance(part, dict) else getattr(part, "text", ""))
+            for part in parts
+        ):
             return
-        event.set_extra("bili_chat_injected", True)
         refs = event.get_extra("bili_chat_refs")
         if refs is None:
             refs = route["refs"]
@@ -183,6 +205,10 @@ class VideoStoryboardPlugin(Star):
             # Use a request-local copy; never disable parser's tool globally.
             req.func_tool = copy.copy(req.func_tool)
             req.func_tool.remove_tool("parse_media_url")
+        cached = event.get_extra("bili_chat_evidence")
+        if cached:
+            req.extra_user_content_parts = [*parts, {"type": "text", "text": cached}]
+            return
         records = list(event.get_extra("bili_chat_memories") or [])
         failures = []
         for ref in refs[:2]:
@@ -210,14 +236,13 @@ class VideoStoryboardPlugin(Star):
             )
         if not records and not failures:
             return
+        if stopped(event):
+            return
         payload = {"video_knowledge": records[:2], "unavailable": failures}
-        req.prompt = (
-            (req.prompt or "")
-            + "\n\n"
-            + CHAT_GUIDANCE
-            + "\n"
-            + json.dumps(payload, ensure_ascii=False)
-        )
+        evidence = EVIDENCE_MARKER + CHAT_GUIDANCE + "\n" + json.dumps(payload, ensure_ascii=False)
+        event.set_extra("bili_chat_evidence", evidence)
+        # A request-local content block preserves other plugins' prompt plans and tools.
+        req.extra_user_content_parts = [*parts, {"type": "text", "text": evidence}]
         # Final delivery, persona, memory and reply style remain AstrBot's responsibilities.
 
     async def terminate(self):

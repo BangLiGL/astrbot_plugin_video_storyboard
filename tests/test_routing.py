@@ -93,7 +93,9 @@ class RoutingTests(unittest.TestCase):
 class CompatibilityChatTests(base.ChatTests):
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        self.context.get_registered_star = lambda name: types.SimpleNamespace(activated=True)
+        self.context.get_registered_star = lambda name: (
+            types.SimpleNamespace(activated=True) if name == "astrbot_plugin_parser" else None
+        )
         self.persona = {"prompt": "本轮已经加载的群聊人设", "_begin_dialogs_processed": []}
         self.context.persona_manager = types.SimpleNamespace(
             resolve_selected_persona=AsyncMock(
@@ -102,7 +104,7 @@ class CompatibilityChatTests(base.ChatTests):
         )
 
     # Inherit only the setup/teardown, not duplicate the original suite.
-    test_bv_starts_one_normal_conversation_request_without_any_report = None
+    test_bv_wakes_native_pipeline_without_creating_another_request = None
     test_knowledge_injected_without_replacing_persona_or_history = None
     test_failure_is_context_for_honest_persona_reply_not_fake_summary = None
     test_ordinary_chat_and_group_allowlist = None
@@ -111,18 +113,20 @@ class CompatibilityChatTests(base.ChatTests):
     async def test_bare_share_never_analyses_even_when_another_plugin_calls_llm(self):
         event = base.Event("BV1GJ411x7h7")
         self.instance.analyzer.understand = AsyncMock()
-        self.assertEqual([item async for item in self.instance.on_message(event)], [])
+        await self.instance.on_message(event)
         request = types.SimpleNamespace(prompt=event.text, system_prompt="persona")
         await self.instance.inject_video_knowledge(event, request)
         self.instance.analyzer.understand.assert_not_called()
         self.assertEqual(request.prompt, event.text)
-        self.assertTrue(event.call_llm)
+        self.assertFalse(event.call_llm)
+        self.assertFalse(event.is_at_or_wake_command)
 
     async def test_comment_takes_over_only_parser_and_copies_tools(self):
         event = base.Event("BV1GJ411x7h7 你怎么看")
         parser, other = parser_entry(), parser_entry("other", "data.plugins.other.main")
         event.set_extra("activated_handlers", [parser, other])
-        self.assertEqual(len([item async for item in self.instance.on_message(event)]), 1)
+        await self.instance.on_message(event)
+        self.assertTrue(event.is_at_or_wake_command)
         self.assertEqual(event.get_extra("activated_handlers"), [other])
         self.instance.analyzer.understand = AsyncMock(return_value={"understanding": "事实"})
 
@@ -141,9 +145,9 @@ class CompatibilityChatTests(base.ChatTests):
 
     async def test_compatibility_off_restores_original_bare_bv_trigger(self):
         self.config["parser_compatibility"] = False
-        self.assertEqual(
-            len([item async for item in self.instance.on_message(base.Event("BV1GJ411x7h7"))]), 1
-        )
+        event = base.Event("BV1GJ411x7h7")
+        await self.instance.on_message(event)
+        self.assertTrue(event.is_at_or_wake_command)
 
     async def test_notice_uses_current_chat_persona_once_and_preserves_history(self):
         event = base.Event("看看视频")

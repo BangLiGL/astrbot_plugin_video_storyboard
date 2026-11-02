@@ -75,6 +75,16 @@ class Event:
         self.extras = {}
         self.requests = []
         self.call_llm = False
+        self.is_at_or_wake_command = False
+        self.is_wake = False
+        self._stopped = False
+        self._has_send_oper = False
+
+    def is_stopped(self):
+        return self._stopped
+
+    def stop_event(self):
+        self._stopped = True
 
     def get_group_id(self):
         return self.group
@@ -330,14 +340,13 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         await self.instance.terminate()
         self.folder.cleanup()
 
-    async def test_bv_starts_one_normal_conversation_request_without_any_report(self):
+    async def test_bv_wakes_native_pipeline_without_creating_another_request(self):
         event = Event("看看 BV1GJ411x7h7，笑死了")
-        results = [item async for item in self.instance.on_message(event)]
-        self.assertEqual(len(results), 1)
-        self.assertEqual(event.requests[0]["prompt"], event.text)
-        self.assertIs(event.requests[0]["conversation"], self.context.conversation)
-        self.assertEqual(event.requests[0]["conversation"].persona_id, "group_persona")
-        self.assertTrue(event.call_llm)
+        await self.instance.on_message(event)
+        self.assertEqual(event.requests, [])
+        self.assertTrue(event.is_at_or_wake_command)
+        self.assertFalse(event.call_llm)
+        self.context.conversation_manager.new_conversation.assert_not_called()
         self.context.llm_generate.assert_not_called()
 
     async def test_knowledge_injected_without_replacing_persona_or_history(self):
@@ -352,13 +361,14 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         )
         history = copy.deepcopy(request.contexts)
         await self.instance.inject_video_knowledge(event, request)
-        self.assertIn("作者在讲一个观点", request.prompt)
+        self.assertEqual(request.prompt, event.text)
+        self.assertIn("作者在讲一个观点", request.extra_user_content_parts[-1]["text"])
         self.assertEqual(request.system_prompt, "原来的人设")
         self.assertEqual(request.contexts, history)
         self.assertEqual(request.image_urls, [])
-        once = request.prompt
+        once = copy.deepcopy(request.extra_user_content_parts)
         await self.instance.inject_video_knowledge(event, request)
-        self.assertEqual(request.prompt, once)
+        self.assertEqual(request.extra_user_content_parts, once)
 
     async def test_failure_is_context_for_honest_persona_reply_not_fake_summary(self):
         self.instance.analyzer.understand = AsyncMock(
@@ -367,20 +377,21 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         event = Event("BV1GJ411x7h7")
         request = types.SimpleNamespace(prompt=event.text, system_prompt="人设")
         await self.instance.inject_video_knowledge(event, request)
-        self.assertIn("没有读到视频内容", request.prompt)
-        self.assertIn('"video_knowledge": []', request.prompt)
+        evidence = request.extra_user_content_parts[-1]["text"]
+        self.assertIn("没有读到视频内容", evidence)
+        self.assertIn('"video_knowledge": []', evidence)
+        self.assertEqual(request.prompt, event.text)
         self.assertEqual(request.system_prompt, "人设")
 
     async def test_ordinary_chat_and_group_allowlist(self):
-        self.assertEqual([item async for item in self.instance.on_message(Event("今天聊点啥"))], [])
+        event = Event("今天聊点啥")
+        await self.instance.on_message(event)
+        self.assertFalse(event.is_at_or_wake_command)
         self.config["enabled_groups"] = ["200"]
-        self.assertEqual(
-            [item async for item in self.instance.on_message(Event("BV1GJ411x7h7", group="100"))],
-            [],
-        )
-        self.assertEqual(
-            [item async for item in self.instance.on_message(Event("BV1GJ411x7h7", group=""))], []
-        )
+        for group in ("100", ""):
+            event = Event("BV1GJ411x7h7", group=group)
+            await self.instance.on_message(event)
+            self.assertFalse(event.is_at_or_wake_command)
         a = self.instance.scope(Event("", group="200", bot="bot1"))
         b = self.instance.scope(Event("", group="200", bot="bot2"))
         self.assertNotEqual(a, b)
@@ -390,13 +401,14 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.instance.analyzer.knowledge.remember(
             self.instance.scope(event), "key", {"title": "视频", "understanding": "已读的事实"}
         )
-        results = [item async for item in self.instance.on_message(event)]
-        self.assertEqual(len(results), 1)
+        await self.instance.on_message(event)
+        self.assertTrue(event.is_at_or_wake_command)
         request = types.SimpleNamespace(prompt=event.text)
         await self.instance.inject_video_knowledge(event, request)
-        self.assertIn("已读的事实", request.prompt)
+        self.assertIn("已读的事实", request.extra_user_content_parts[-1]["text"])
         other = Event(event.text, group="other")
-        self.assertEqual([item async for item in self.instance.on_message(other)], [])
+        await self.instance.on_message(other)
+        self.assertFalse(other.is_at_or_wake_command)
 
 
 class MediaTests(unittest.IsolatedAsyncioTestCase):
