@@ -13,6 +13,7 @@ The user requires every completed project update to be published to GitHub Relea
 ## Product behavior
 
 - Video storyboards are internal evidence; final conversation belongs to AstrBot's current model and persona.
-- Generate long-video notices only after resolving and injecting the currently effective AstrBot persona, including its preset dialogue. Skip notices if the persona cannot be confirmed.
+- Generate LLM-based long-video notices only after resolving and injecting the currently effective AstrBot persona, including its preset dialogue. Skip LLM notices if the persona cannot be confirmed. The user-authorized fixed-text mode sends configured text without an LLM or persona lookup.
+- Contribute evidence to existing chat requests. Never create a separate conversation request or undo another plugin's stop/suppression. In auto mode, defer waking to an enabled private_companion; passive mode leaves waking to all other chat controllers.
 - Retain the explicit division of message ownership with `astrbot_plugin_parser`.
 - On the user's server, use existing cached media for actual tests; do not download new test videos or send test messages to real groups.
