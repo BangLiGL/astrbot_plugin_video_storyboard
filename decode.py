@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 SAOS-3624
 # Copyright 2026 BangLiGL
-"""Bounded decoding adapted from dsh-video-storyboard v0.6.2 scan/frame concepts.
+"""Bounded decoding adapted from dsh-video-storyboard through v0.6.7.
 
 Python subprocess lifecycle, PTS matching and AstrBot resource limits are local
 adaptations. See NOTICE and LICENSES/Apache-2.0.txt.
@@ -19,7 +19,7 @@ import imageio_ffmpeg
 import numpy as np
 
 from .bilibili import VideoError
-from .sampling import hsv_distance, normalize_changes, scene_cuts
+from .sampling import hsv_distance, motion_floor, motion_score, normalize_changes, scene_cuts
 
 
 @contextlib.contextmanager
@@ -103,7 +103,7 @@ def scan_video(path, fps, duration, cancel):
     # At most 14,400 tiny frames; long/high-FPS sources cannot grow memory unboundedly.
     rate = min(fps, 24.0, 14400 / duration)
     means, rows, peaks = [], np.zeros(36), np.zeros(36)
-    scores, long_scores, ring = [], [], []
+    scores, absolute, long_scores, ring = [], [], [], []
     lag = max(1, round(0.4 * rate))
     previous = None
     with process(
@@ -146,7 +146,8 @@ def scan_video(path, fps, duration, cancel):
             peaks = np.maximum(peaks, value.max(axis=1))
             at = index / rate
             if previous is not None:
-                scores.append((at, hsv_distance(previous, hsv)))
+                scores.append((at, motion_score(previous, hsv)))
+                absolute.append((at, hsv_distance(previous, hsv)))
             if len(ring) == lag:
                 long_scores.append((at, hsv_distance(ring[index % lag], hsv)))
                 ring[index % lag] = hsv
@@ -162,7 +163,14 @@ def scan_video(path, fps, duration, cancel):
     bars = bars if 0 < bars < 0.5 else 0
     normalized = normalize_changes(scores, means, bars, offset=1)
     normalized_long = normalize_changes(long_scores, means, bars, offset=lag)
-    cuts = scene_cuts(scores, duration, normalized=normalized, long_scores=normalized_long)
+    cuts = scene_cuts(
+        scores,
+        duration,
+        normalized=normalized,
+        long_scores=normalized_long,
+        mode="mc",
+        absolute_scores=normalize_changes(absolute, means, bars),
+    )
     return {
         "scores": normalized,
         "cuts": cuts,
@@ -170,6 +178,7 @@ def scan_video(path, fps, duration, cancel):
         "frames": len(means),
         "bars": round(bars, 3),
         "rate": rate,
+        "scoring": {"mode": "mc", "cut_floor": round(motion_floor(normalized) * 255, 2)},
     }
 
 

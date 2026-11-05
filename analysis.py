@@ -8,7 +8,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from .bilibili import BiliClient, VideoError
+from .bilibili import BiliClient, DiskSpaceError, VideoError
 from .engine import storyboard, transcribe
 from .knowledge import Knowledge
 from .media import prepare_video, resolve_sources
@@ -115,7 +115,7 @@ class Analyzer:
             if vision_id
             else "",
             "sampling": visual_options(self.config),
-            "version": 4,
+            "version": 5,
         }
         key = fingerprint(identity)
         hours = int(self.config.get("cache_hours", 168))
@@ -246,6 +246,7 @@ class Analyzer:
                     "scan_interval": visual["scan_interval"],
                     "scene_cuts": visual["cuts"],
                     "plan": visual["plan"],
+                    "scoring": visual["scoring"],
                 }
                 if can_see
                 else None,
@@ -368,6 +369,9 @@ class Analyzer:
                 media["warnings"].append("语音识别未返回文字，不代表音轨没有人声")
         except asyncio.CancelledError:
             raise
+        except DiskSpaceError:
+            media["transcript_status"] = "failed"
+            media["warnings"].append("临时目录磁盘空间不足，未能准备语音识别音频；不要猜测台词")
         except Exception:
             media["transcript_status"] = "failed"
             media["warnings"].append("语音识别未成功；不要猜测未听到的台词")

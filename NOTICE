@@ -24,6 +24,19 @@ Both modules are licensed under Apache-2.0. Local modifications include packaged
 FFmpeg subprocess lifecycle, bounded scan/batch resources, decoded-PTS matching,
 fixed AstrBot image budgets and cancellation. No DSH/harness or WebUI is bundled.
 
+v0.6.2 additionally adapts motion-compensated HSV scoring, noise-calibrated cut
+floors, sparse spike gating and novelty checks from upstream v0.6.7:
+Reference commit: 11d8b8f057a56b3e27b8a740a6f8d29e3848de87
+https://github.com/SAOS-3624/dsh-video-storyboard/tree/v0.6.7
+Copyright 2026 SAOS-3624
+Copyright 2026 BangLiGL (Python adaptation and AstrBot-specific modifications)
+sampling.py and decode.py retain Apache-2.0. Changes include vectorized OpenCV
+HSV neighbourhood matching, 0..1 score conversion, bounded scanning, preserved
+absolute-difference fade detection and fixed AstrBot sampling/image limits.
+Destination-filesystem capacity checks in the MIT adapter are independently
+implemented using Python shutil.disk_usage, informed by upstream's storage fix.
+No DSH host ASR API, dynamic packing, web settings or provider-specific pricing is copied.
+
 Interaction/workflow research references (no source code copied):
 https://github.com/SodaCodeSave/astrbot_plugin_biliread
 https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary
