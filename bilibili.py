@@ -1,9 +1,11 @@
 """Bilibili identifiers, subtitles and bounded media downloads."""
 
 import asyncio
+import errno
 import ipaddress
 import json
 import re
+import shutil
 import socket
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlsplit
@@ -19,6 +21,23 @@ HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
 
 class VideoError(Exception):
     """An operational error safe to describe to the model."""
+
+
+class DiskSpaceError(VideoError):
+    """A local capacity failure; trying another CDN cannot fix it."""
+
+
+def ensure_space(destination, required):
+    """Check the destination filesystem, including directories not created yet."""
+    probe = Path(destination).resolve()
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        return  # The actual write still reports permission/filesystem failures.
+    if free < max(0, required) + 16 * 1048576:
+        raise DiskSpaceError("视频临时目录所在磁盘空间不足，请先释放空间后重试")
 
 
 def extract_refs(text):
@@ -119,6 +138,8 @@ class BiliClient:
                 return await asyncio.wait_for(self._get(url, max_bytes, target), timeout=40)
             except asyncio.CancelledError:
                 raise
+            except DiskSpaceError:
+                raise
             except Exception:
                 continue
         raise VideoError("B站主备媒体节点均暂时不可用")
@@ -146,11 +167,19 @@ class BiliClient:
                             raise VideoError("视频文件超过插件的大小上限")
                         size = 0
                         if target:
+                            ensure_space(
+                                target.parent,
+                                response.content_length or min(max_bytes, 8 * 1048576),
+                            )
                             with part.open("wb") as file:
+                                checked = 0
                                 async for chunk in response.content.iter_chunked(65536):
                                     size += len(chunk)
                                     if size > max_bytes:
                                         raise VideoError("视频文件超过插件的大小上限")
+                                    if size - checked >= 1048576:
+                                        ensure_space(target.parent, len(chunk))
+                                        checked = size
                                     file.write(chunk)
                             if not size:
                                 raise VideoError("视频下载结果为空")
@@ -163,6 +192,10 @@ class BiliClient:
                                 raise VideoError("字幕数据过大")
                         return bytes(raw)
                 raise VideoError("视频服务重定向次数过多")
+        except OSError as error:
+            if error.errno == errno.ENOSPC:
+                raise DiskSpaceError("视频临时目录所在磁盘空间不足，请先释放空间后重试") from error
+            raise
         finally:
             if part:
                 part.unlink(missing_ok=True)

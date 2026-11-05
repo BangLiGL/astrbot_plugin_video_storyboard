@@ -11,7 +11,7 @@ import imageio_ffmpeg
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
-from .bilibili import VideoError
+from .bilibili import VideoError, ensure_space
 from .decode import extract_frames, scan_video
 from .sampling import density_boundaries, plan_images, readability
 
@@ -160,6 +160,7 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
             "scan_interval": round(scan["interval"], 3),
             "scan_frames": scan["frames"],
             "letterbox_fraction": scan["bars"],
+            "scoring": scan["scoring"],
             "sheets": sheets,
             "plan": {k: v for k, v in plan.items() if k not in {"layouts", "counts"}},
         }
@@ -177,6 +178,7 @@ async def transcribe(provider, media_path, directory, duration, timeout=60):
         path = directory / f"asr-{index}.wav"
         proc = None
         try:
+            ensure_space(directory, math.ceil((end - start) * 16000 * 2) + 4096)
             kwargs = (
                 {"creationflags": subprocess.CREATE_NO_WINDOW}
                 if hasattr(subprocess, "CREATE_NO_WINDOW")
