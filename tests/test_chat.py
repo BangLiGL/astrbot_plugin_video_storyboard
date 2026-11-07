@@ -633,6 +633,59 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertFalse(list((Path(self.folder.name) / "media").glob("*")))
 
+    async def test_cancelled_waiter_does_not_cancel_shared_media_processing(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.analyzer.client.fetch.side_effect
+
+        async def fetch(ref, directory, on_info=None):
+            entered.set()
+            await release.wait()
+            return await original(ref, directory, on_info)
+
+        self.analyzer.client.fetch.side_effect = fetch
+        ref = {"bvid": "BV1GJ411x7h7", "page": 1}
+        cancelled = asyncio.create_task(self.analyzer.understand(ref, "one", "scope1"))
+        await asyncio.wait_for(entered.wait(), 5)
+        cancelled.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await cancelled
+        self.assertFalse(next(iter(self.analyzer.jobs.values())).cancelled())
+        release.set()
+        result = await self.analyzer.understand(ref, "two", "scope2")
+        self.assertTrue(result["visual"])
+        self.analyzer.client.fetch.assert_awaited_once()
+        self.assertTrue(self.analyzer.knowledge.retrieve("scope2", "刚才那个视频"))
+        self.assertTrue(self.clip.exists())
+        self.assertFalse(list((Path(self.folder.name) / "media").glob("*")))
+
+    async def test_completed_job_does_not_prune_another_jobs_active_media(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        active_media = []
+
+        async def fetch(ref, directory, on_info=None):
+            # Each job owns its own download, even if another job finishes first.
+            owned = Path(directory) / "video.mp4"
+            owned.write_bytes(self.clip.read_bytes())
+            if ref["page"] == 1:
+                active_media.append(owned)
+                entered.set()
+                await release.wait()
+            return {**copy.deepcopy(self.metadata), "video_path": str(owned)}
+
+        self.analyzer.client.fetch.side_effect = fetch
+        active = asyncio.create_task(
+            self.analyzer.understand({"bvid": "BV1GJ411x7h7", "page": 1}, "one", "scope1")
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        other = await self.analyzer.understand({"bvid": "BV1GJ411x7h7", "page": 2}, "two", "scope2")
+        self.assertTrue(other["visual"])
+        self.assertEqual(active_media[0].read_bytes(), self.clip.read_bytes())
+        release.set()
+        self.assertTrue((await active)["visual"])
+        self.assertFalse(active_media[0].exists())
+        self.assertTrue(self.clip.exists())
+        self.assertFalse(list((Path(self.folder.name) / "media").glob("*")))
+
 
 if __name__ == "__main__":
     unittest.main()
