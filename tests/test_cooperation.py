@@ -127,6 +127,43 @@ class CooperationTests(unittest.IsolatedAsyncioTestCase):
         self.instance.analyzer.understand.assert_awaited_once()
         self.assertEqual(rebuilt.prompt, "The companion's merged user turn")
 
+    async def test_only_our_evidence_is_temporary_in_new_and_rebuilt_requests(self):
+        event = self.event()
+        for request in (self.request(), self.request()):
+            permanent = request.extra_user_content_parts[0]
+            await self.instance.inject_video_knowledge(event, request)
+            self.assertIs(request.extra_user_content_parts[0], permanent)
+            self.assertNotIn("_no_save", permanent)
+            block = request.extra_user_content_parts[-1]
+            self.assertTrue(block["_no_save"])
+            self.assertEqual(block["type"], "text")
+            self.assertIn("Grounded video evidence", block["text"])
+        self.instance.analyzer.understand.assert_awaited_once()
+
+    async def test_failed_video_evidence_is_also_temporary(self):
+        self.instance.analyzer.understand.side_effect = base.bili.VideoError("video unavailable")
+        event, request = self.event(), self.request()
+        await self.instance.inject_video_knowledge(event, request)
+        self.assertTrue(request.extra_user_content_parts[-1]["_no_save"])
+        self.assertIn("video unavailable", request.extra_user_content_parts[-1]["text"])
+
+    async def test_followup_retrieves_durable_facts_as_temporary_evidence(self):
+        event = base.Event("刚才那个视频在讲什么？")
+        self.instance.analyzer.knowledge.remember(
+            self.instance.scope(event),
+            "known",
+            {"title": "已看视频", "understanding": "保存的事实"},
+        )
+        request = self.request()
+        await self.instance.inject_video_knowledge(event, request)
+        block = request.extra_user_content_parts[-1]
+        self.assertTrue(block["_no_save"])
+        self.assertIn("保存的事实", block["text"])
+        self.instance.analyzer.understand.assert_not_called()
+        unrelated = self.request()
+        await self.instance.inject_video_knowledge(base.Event("今晚吃什么？"), unrelated)
+        self.assertEqual(len(unrelated.extra_user_content_parts), 1)
+
     async def test_cancellation_during_analysis_never_attaches_partial_evidence(self):
         self.instance.analyzer.understand.side_effect = asyncio.CancelledError()
         event, request = self.event(), self.request()

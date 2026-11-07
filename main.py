@@ -207,7 +207,10 @@ class VideoStoryboardPlugin(Star):
             req.func_tool.remove_tool("parse_media_url")
         cached = event.get_extra("bili_chat_evidence")
         if cached:
-            req.extra_user_content_parts = [*parts, {"type": "text", "text": cached}]
+            req.extra_user_content_parts = [
+                *parts,
+                {"type": "text", "text": cached, "_no_save": True},
+            ]
             return
         records = list(event.get_extra("bili_chat_memories") or [])
         failures = []
@@ -241,8 +244,12 @@ class VideoStoryboardPlugin(Star):
         payload = {"video_knowledge": records[:2], "unavailable": failures}
         evidence = EVIDENCE_MARKER + CHAT_GUIDANCE + "\n" + json.dumps(payload, ensure_ascii=False)
         event.set_extra("bili_chat_evidence", evidence)
-        # A request-local content block preserves other plugins' prompt plans and tools.
-        req.extra_user_content_parts = [*parts, {"type": "text", "text": evidence}]
+        # Provider-facing only: future turns retrieve facts from our scoped knowledge store
+        # instead of resending every old evidence block through AstrBot's saved history.
+        req.extra_user_content_parts = [
+            *parts,
+            {"type": "text", "text": evidence, "_no_save": True},
+        ]
         # Final delivery, persona, memory and reply style remain AstrBot's responsibilities.
 
     async def terminate(self):

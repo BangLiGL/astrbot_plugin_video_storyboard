@@ -37,6 +37,15 @@ Destination-filesystem capacity checks in the MIT adapter are independently
 implemented using Python shutil.disk_usage, informed by upstream's storage fix.
 No DSH host ASR API, dynamic packing, web settings or provider-specific pricing is copied.
 
+v0.6.3 reviews upstream v0.6.8 through v0.6.9:
+Reference commit: c3e1bdf1e9a3a47b85b626df80a2e0309af379c3
+https://github.com/SAOS-3624/dsh-video-storyboard/tree/v0.6.9
+The history-offload principle is independently adapted to AstrBot's temporary
+provider-facing text parts. Storyboard images remain in isolated background
+requests; scoped SQLite knowledge supplies later relevant turns. No DSH image
+events, host registration fallback, settings UI or third-party media is copied.
+Existing per-job media ownership and hidden Windows subprocesses are retained.
+
 Interaction/workflow research references (no source code copied):
 https://github.com/SodaCodeSave/astrbot_plugin_biliread
 https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary
