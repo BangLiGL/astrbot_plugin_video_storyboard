@@ -8,7 +8,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from .bilibili import BiliClient, DiskSpaceError, VideoError
+from .bilibili import BiliClient, DiskSpaceError, VideoError, subtitle_warning
 from .engine import storyboard, transcribe
 from .knowledge import Knowledge
 from .media import prepare_video, resolve_sources
@@ -27,6 +27,8 @@ readability 为 shot/composition 的画面不能用来辨认字幕或小字；sc
 近黑画面、抽样缺口和清晰度不足都是证据限制，不等于没有剧情、没有声音或没有文字。
 audio_state=absent才表示实际媒体未发现音轨；unavailable表示获取/解码失败，unknown表示未能确认，
 available_not_downloaded表示站点提供音轨但因已取得字幕没有下载。没有转写不等于没有人声。
+site_subtitle单独记录站点字幕状态：none表示未提供，failed/login_required表示获取受阻，
+不能将请求失败当作没有字幕。embedded_subtitle记录内嵌字幕读取状态，transcript_source才是实际文字来源。
 各图片的页码与from/to是整片的绝对时间；不要把不同图片重新从0秒计时。
 """
 
@@ -228,6 +230,11 @@ class Analyzer:
             if can_see:
                 media["warnings"].extend(visual["plan"]["warnings"])
             if not can_see and not media["segments"]:
+                if media.get("site_subtitle", {}).get("status") in {"failed", "login_required"}:
+                    raise VideoError(
+                        subtitle_warning(media["site_subtitle"])
+                        + "；本次也未取得可用画面或语音文字，不能确认视频内容"
+                    )
                 raise VideoError(
                     "未取得可理解的字幕，当前也没有可用视觉模型；请在 AstrBot 供应商页面配置后从插件中选择"
                 )
@@ -238,6 +245,8 @@ class Analyzer:
                 "duration": media["duration"],
                 "transcript_source": media["transcript_source"],
                 "transcript_status": media["transcript_status"],
+                "site_subtitle": media.get("site_subtitle", {"status": "not_applicable"}),
+                "embedded_subtitle": media.get("embedded_subtitle", "not_attempted"),
                 "audio_state": media["audio_state"],
                 "transcript": media["segments"],
                 "visible_cells": visual["cells"] if can_see else [],
@@ -309,6 +318,7 @@ class Analyzer:
         """Independent text pass; it runs while the visual worker scans and renders."""
         path = media.get("audio_path") or media.get("video_path")
         media["transcript_status"] = "available" if media["segments"] else "not_configured"
+        media.setdefault("embedded_subtitle", "not_attempted")
         if "audio_state" not in media:
             try:
                 media["audio_state"] = await audio_status(path) if path else "unknown"
@@ -321,6 +331,7 @@ class Analyzer:
         if media.get("video_path"):
             try:
                 rows, status = await embedded_subtitles(media["video_path"], media["duration"])
+                media["embedded_subtitle"] = status
                 if rows:
                     media.update(
                         segments=rows,
@@ -333,8 +344,14 @@ class Analyzer:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                media["embedded_subtitle"] = "failed"
                 media["warnings"].append("内嵌字幕提取未成功，继续尝试有效转写缓存或ASR")
         if not stt or not callable(getattr(stt, "get_text", None)):
+            if media.get("site_subtitle", {}).get("status") in {
+                "failed",
+                "login_required",
+            } or media["embedded_subtitle"] in {"failed", "unreadable"}:
+                media["transcript_status"] = "subtitle_failed"
             media["warnings"].append("没有可用语音识别供应商；未听取音轨不能当作没有人声")
             return
         cached = await asyncio.to_thread(self.knowledge.cached_transcript, key, hours)

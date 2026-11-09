@@ -46,6 +46,13 @@ requests; scoped SQLite knowledge supplies later relevant turns. No DSH image
 events, host registration fallback, settings UI or third-party media is copied.
 Existing per-job media ownership and hidden Windows subprocesses are retained.
 
+v0.7.0 reviews upstream v0.7.0 through v0.7.1:
+Reference commit: 60aedccd32b7f28815770e0a283f49ebac2e106a
+https://github.com/SAOS-3624/dsh-video-storyboard/tree/v0.7.1
+Subtitle failure categories and retryable partial-result caching are independently
+implemented for bilibili-api-python and AstrBot's scoped SQLite knowledge store.
+No yt-dlp memo, DSH settings token, tier curves or localized host metadata is copied.
+
 Interaction/workflow research references (no source code copied):
 https://github.com/SodaCodeSave/astrbot_plugin_biliread
 https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary
