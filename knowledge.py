@@ -17,6 +17,19 @@ def terms(text):
     return result
 
 
+def retryable_text_gap(record):
+    """Retry operational gaps, retaining successful fallback transcripts at normal TTL."""
+    if record.get("transcript_status") == "available":
+        return False
+    return (
+        record.get("transcript_status") in {"failed", "subtitle_failed"}
+        or record.get("site_subtitle", {}).get("status") in {"failed", "login_required"}
+        or record.get("embedded_subtitle") in {"failed", "unreadable"}
+        # Recognize pre-v0.7.0 degraded results without clearing their group memories.
+        or any("站点字幕不可用" in warning for warning in record.get("warnings", []))
+    )
+
+
 class Knowledge:
     def __init__(self, path):
         self.path = Path(path)
@@ -51,10 +64,15 @@ class Knowledge:
     def cached(self, key, hours=168):
         with self.connect() as db:
             row = db.execute(
-                "SELECT record FROM videos WHERE key=? AND created>?",
+                "SELECT record,created FROM videos WHERE key=? AND created>?",
                 (key, time.time() - hours * 3600),
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        record = json.loads(row[0])
+        if retryable_text_gap(record) and time.time() - row[1] >= 300:
+            return None
+        return record
 
     def save(self, key, record):
         # Media paths and credentials are never part of persistent chat knowledge.
@@ -71,6 +89,8 @@ class Knowledge:
                 "understanding",
                 "transcript_source",
                 "transcript_status",
+                "site_subtitle",
+                "embedded_subtitle",
                 "audio_state",
                 "warnings",
                 "visual",
@@ -97,7 +117,7 @@ class Knowledge:
                     if record.get("transcript_source") in {
                         "bilibili_subtitle",
                         "embedded_subtitle",
-                    }:
+                    } and not retryable_text_gap(record):
                         return key, record
         return None
 

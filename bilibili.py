@@ -4,6 +4,7 @@ import asyncio
 import errno
 import ipaddress
 import json
+import math
 import re
 import shutil
 import socket
@@ -12,7 +13,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 import aiohttp
 from aiohttp.abc import AbstractResolver
-from bilibili_api import Credential, video
+from bilibili_api import Credential, exceptions, video
 
 BV = re.compile(r"(?<![A-Za-z0-9])BV[0-9A-Za-z]{10}(?![A-Za-z0-9])", re.I)
 URL = re.compile(r"https?://[^\s<>\"\\]+", re.I)
@@ -25,6 +26,37 @@ class VideoError(Exception):
 
 class DiskSpaceError(VideoError):
     """A local capacity failure; trying another CDN cannot fix it."""
+
+
+def subtitle_failure(error):
+    """Only safe categories/codes; exception strings may contain cookies or signed URLs."""
+    if isinstance(error, exceptions.CredentialNoSessdataException) or (
+        isinstance(error, exceptions.ResponseCodeException) and error.code == -101
+    ):
+        return {"status": "login_required", "reason": "authentication"}
+    if isinstance(error, exceptions.ResponseCodeException):
+        return {"status": "failed", "reason": "api_error", "code": int(error.code)}
+    if isinstance(error, aiohttp.ClientResponseError):
+        return {"status": "failed", "reason": "http_error", "code": int(error.status)}
+    if isinstance(error, (aiohttp.ClientError, exceptions.NetworkException, OSError, TimeoutError)):
+        return {"status": "failed", "reason": "network_error"}
+    if isinstance(error, (ValueError, TypeError, KeyError, UnicodeError)):
+        return {"status": "failed", "reason": "invalid_response"}
+    return {"status": "failed", "reason": "request_failed"}
+
+
+def subtitle_warning(state):
+    if state["status"] == "login_required":
+        return "站点字幕需要有效登录，当前未取得；检查B站登录凭据后可重试，不等于视频没有字幕"
+    detail = {
+        "api_error": "站点接口返回错误",
+        "http_error": "字幕下载返回HTTP错误",
+        "network_error": "网络连接或请求超时",
+        "invalid_response": "字幕响应格式无效",
+        "request_failed": "字幕请求未完成",
+    }.get(state.get("reason"), "字幕请求未完成")
+    code = f"（代码{state['code']}）" if "code" in state else ""
+    return f"站点字幕获取失败：{detail}{code}；继续尝试内嵌字幕或ASR，不能当作视频没有字幕"
 
 
 def ensure_space(destination, required):
@@ -254,29 +286,7 @@ class BiliClient:
         }
         if on_info:
             await on_info(result)
-        try:
-            subtitles = (await item.get_subtitle(cid=part["cid"]) or {}).get("subtitles") or []
-            subtitles.sort(
-                key=lambda sub: (not str(sub.get("lan", "")).startswith("zh"), sub.get("lan", ""))
-            )
-            if subtitles:
-                url = str(subtitles[0].get("subtitle_url", ""))
-                if url.startswith("//"):
-                    url = "https:" + url
-                data = json.loads(await self._get(url, 4 * 1048576))
-                result["segments"] = [
-                    {
-                        "from": float(row["from"]),
-                        "to": float(row["to"]),
-                        "text": str(row["content"])[:2000],
-                        "timing": "subtitle",
-                    }
-                    for row in data.get("body", [])
-                    if row.get("content")
-                ][:12000]
-                result["transcript_source"] = "bilibili_subtitle"
-        except Exception:
-            result["warnings"].append("站点字幕不可用；有配置语音识别时尝试转写")
+        await self._subtitles(item, part["cid"], result)
         try:
             streams = await item.get_download_url(cid=part["cid"])
             dash = streams.get("dash") or {}
@@ -331,5 +341,69 @@ class BiliClient:
                 else "视频画面下载失败，当前只能依据已取得的字幕理解，不能声称看到了画面"
             )
         if not result.get("video_path") and not result["segments"]:
+            if result["site_subtitle"]["status"] in {"failed", "login_required"}:
+                raise VideoError(
+                    subtitle_warning(result["site_subtitle"])
+                    + "；本次视频画面也未取得，暂时无法理解内容"
+                )
             raise VideoError("没能取得视频画面或字幕，可能需要登录、受到站点风控或视频已失效")
         return result
+
+    async def _subtitles(self, item, cid, result):
+        try:
+            metadata = await item.get_subtitle(cid=cid)
+            if metadata is None:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                raise ValueError("Invalid subtitle metadata")
+            subtitles = metadata.get("subtitles", [])
+            if not isinstance(subtitles, list) or any(not isinstance(s, dict) for s in subtitles):
+                raise ValueError("Invalid subtitle list")
+            if not subtitles:
+                if metadata.get("need_login_subtitle"):
+                    state = {"status": "login_required", "reason": "authentication"}
+                    result["site_subtitle"] = state
+                    result["warnings"].append(subtitle_warning(state))
+                else:
+                    result["site_subtitle"] = {"status": "none"}
+                return
+            subtitles.sort(
+                key=lambda sub: (
+                    not str(sub.get("lan", "")).startswith("zh"),
+                    str(sub.get("lan", "")),
+                )
+            )
+            selected = subtitles[0]
+            url = str(selected.get("subtitle_url", ""))
+            if url.startswith("//"):
+                url = "https:" + url
+            if not url:
+                raise ValueError("Missing subtitle URL")
+            data = json.loads(await self._get(url, 4 * 1048576))
+            if not isinstance(data, dict) or not isinstance(data.get("body"), list):
+                raise ValueError("Invalid subtitle body")
+            rows = []
+            for row in data["body"][:12000]:
+                if not isinstance(row, dict) or not isinstance(row.get("content"), str):
+                    raise ValueError("Invalid subtitle row")
+                if not row["content"].strip():
+                    continue
+                start, end = float(row["from"]), float(row["to"])
+                if not (math.isfinite(start) and math.isfinite(end) and 0 <= start < end):
+                    raise ValueError("Invalid subtitle timing")
+                rows.append(
+                    {"from": start, "to": end, "text": row["content"][:2000], "timing": "subtitle"}
+                )
+            language = str(selected.get("lan", ""))
+            result["site_subtitle"] = {"status": "available" if rows else "empty"}
+            if re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", language):
+                result["site_subtitle"]["language"] = language
+            result["segments"] = rows
+            if rows:
+                result["transcript_source"] = "bilibili_subtitle"
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            state = subtitle_failure(error)
+            result["site_subtitle"] = state
+            result["warnings"].append(subtitle_warning(state))
