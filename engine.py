@@ -16,6 +16,21 @@ from .decode import extract_frames, scan_video
 from .sampling import density_boundaries, plan_images, readability
 
 
+def frame_coverage(timestamps, duration):
+    """Measure unobserved spans from emitted frames, including both ends of the video."""
+    marks = sorted({t for t in timestamps if 0 <= t <= duration})
+    edges = [0.0, *marks, duration]
+    start, end = max(zip(edges, edges[1:]), key=lambda pair: pair[1] - pair[0])
+    return {
+        "unique_frames": len(marks),
+        "largest_gap": {
+            "from": round(start, 3),
+            "to": round(end, 3),
+            "seconds": round(end - start, 3),
+        },
+    }
+
+
 def storyboard(video_path, directory, cells=12, cancel=None, options=None):
     """Read a bounded chronological storyboard; each cell is one sampled instant."""
     cancel = cancel or threading.Event()
@@ -33,16 +48,25 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
         source_h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if source_w <= 0 or source_h <= 0:
             raise VideoError("视频解码失败，无法取得画面尺寸")
+        capture.release()
+        scan = scan_video(video_path, fps, duration, cancel)
+        crop = None
+        content_w, content_h = source_w, source_h
+        if scan["content_bounds"]:
+            left, top, right, bottom = scan["content_bounds"]
+            x, y = math.floor(left * source_w), math.floor(top * source_h)
+            content_w = math.ceil(right * source_w) - x
+            content_h = math.ceil(bottom * source_h) - y
+            crop = (x, y, content_w, content_h)
+        aspect = content_w / content_h
         plan = plan_images(
             cells,
-            source_w / source_h,
+            aspect,
             options.get("storyboard_pixel_budget", 1200000),
             options.get("storyboard_readability", "scene"),
             options.get("storyboard_max_per_sheet", 0),
             options.get("storyboard_max_images", 4),
         )
-        capture.release()
-        scan = scan_video(video_path, fps, duration, cancel)
         cuts = scan["cuts"]
         boundaries = density_boundaries(scan["scores"], duration, plan["actual_cells"])
         # Avoid selecting on a detected transition: use the largest shot overlap per interval.
@@ -53,7 +77,7 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
             requests.append(
                 [min(max(0, duration - 1 / fps), a + (b - a) * r) for r in (0.25, 0.5, 0.75)]
             )
-        observations = []
+        observations, timestamps = [], []
         images, sheets = [], []
         index = 0
         for page, (number, canvas) in enumerate(zip(plan["counts"], plan["layouts"]), 1):
@@ -63,9 +87,10 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
                 frames = extract_frames(
                     video_path,
                     targets,
-                    (min(source_w, canvas["cell_width"]), min(source_h, canvas["cell_height"])),
-                    source_w / source_h,
+                    (min(content_w, canvas["cell_width"]), min(content_h, canvas["cell_height"])),
+                    aspect,
                     cancel,
+                    crop=crop,
                 )
             except VideoError:
                 if cancel.is_set():
@@ -113,6 +138,7 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
                     (x + 5, y + height - 24), f"{start:.1f}-{end:.1f}s | @{at:.1f}s", fill="#d5dce8"
                 )
                 level = readability(image.width, image.height)
+                timestamps.append(at)
                 observations.append(
                     {
                         "cell": index + 1,
@@ -161,6 +187,10 @@ def storyboard(video_path, directory, cells=12, cancel=None, options=None):
             "scan_frames": scan["frames"],
             "letterbox_fraction": scan["bars"],
             "scoring": scan["scoring"],
+            "coverage": frame_coverage(timestamps, duration),
+            "trimmed_borders": {"source": [source_w, source_h], "content": [content_w, content_h]}
+            if crop is not None
+            else None,
             "sheets": sheets,
             "plan": {k: v for k, v in plan.items() if k not in {"layouts", "counts"}},
         }

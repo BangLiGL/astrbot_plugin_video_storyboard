@@ -55,6 +55,45 @@ class ScanTests(unittest.TestCase):
         )
         return decode.scan_video(path, fps, len(frames) / fps, threading.Event())
 
+    def test_storyboard_trims_fixed_side_borders_and_keeps_image_budget(self):
+        frames = np.zeros((48, 36, 64, 3), dtype=np.uint8)
+        frames[:, :, 20:44] = (10, 220, 40)
+        self.encode(frames)
+        result = base.engine.storyboard(
+            Path(self.folder.name) / "scan.mkv",
+            self.folder.name,
+            4,
+            options={"storyboard_pixel_budget": 200000, "storyboard_max_images": 1},
+        )
+        self.assertEqual(result["trimmed_borders"], {"source": [64, 36], "content": [26, 36]})
+        self.assertEqual(len(result["images"]), 1)
+        self.assertLessEqual(result["sheets"][0]["width"] * result["sheets"][0]["height"], 200000)
+        self.assertTrue(all(w <= 26 and h <= 36 for w, h in (c["pixels"] for c in result["cells"])))
+        self.assertEqual(result["coverage"]["unique_frames"], len(result["cells"]))
+
+    def test_later_full_frame_content_prevents_cropping_and_black_clip_is_unchanged(self):
+        frames = np.zeros((48, 36, 64, 3), dtype=np.uint8)
+        self.assertIsNone(self.encode(frames)["content_bounds"])
+        frames[:, 8:28] = (10, 220, 40)
+        self.assertIsNotNone(self.encode(frames)["content_bounds"])
+        frames[-3:] = (10, 220, 40)
+        self.assertIsNone(self.encode(frames)["content_bounds"])
+
+    def test_coverage_uses_unique_decoded_times_and_counts_head_and_tail(self):
+        timestamps = [3.25, 3.25, 4.0, 7.0, 11.0, float("nan")]
+        self.assertEqual(
+            base.engine.frame_coverage(timestamps, 10),
+            {"unique_frames": 3, "largest_gap": {"from": 0, "to": 3.25, "seconds": 3.25}},
+        )
+        self.assertEqual(
+            base.engine.frame_coverage(timestamps, 12)["largest_gap"],
+            {"from": 7, "to": 11, "seconds": 4},
+        )
+        self.assertEqual(
+            base.engine.frame_coverage([1, 2], 10)["largest_gap"],
+            {"from": 2, "to": 10, "seconds": 8},
+        )
+
     def test_dark_letterboxed_hard_cut_is_detected_without_brightening_images(self):
         frames = np.zeros((96, 36, 64, 3), dtype=np.uint8)
         frames[:48, 6:30, :, 2] = 45

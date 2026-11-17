@@ -94,6 +94,7 @@ class Knowledge:
                 "audio_state",
                 "warnings",
                 "visual",
+                "coverage",
             )
             if k in record
         }

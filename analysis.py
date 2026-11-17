@@ -30,6 +30,8 @@ available_not_downloaded表示站点提供音轨但因已取得字幕没有下�
 site_subtitle单独记录站点字幕状态：none表示未提供，failed/login_required表示获取受阻，
 不能将请求失败当作没有字幕。embedded_subtitle记录内嵌字幕读取状态，transcript_source才是实际文字来源。
 各图片的页码与from/to是整片的绝对时间；不要把不同图片重新从0秒计时。
+coverage.largest_gap是相邻代表帧之间（含片头、片尾）的最大采样空档。空档内没有送入画面，
+不能据此断言没有动作或事件。trimmed_borders表示分镜裁去了扫描判定的固定黑边。
 """
 
 
@@ -117,7 +119,7 @@ class Analyzer:
             if vision_id
             else "",
             "sampling": visual_options(self.config),
-            "version": 5,
+            "version": 6 if supports_image else 5,
         }
         key = fingerprint(identity)
         hours = int(self.config.get("cache_hours", 168))
@@ -256,6 +258,8 @@ class Analyzer:
                     "scene_cuts": visual["cuts"],
                     "plan": visual["plan"],
                     "scoring": visual["scoring"],
+                    "coverage": visual["coverage"],
+                    "trimmed_borders": visual["trimmed_borders"],
                 }
                 if can_see
                 else None,
@@ -297,6 +301,8 @@ class Analyzer:
                     {"transcript": evidence["transcript"]}, ensure_ascii=False
                 )[:7000]
             media.update({"understanding": understanding, "visual": can_see})
+            if can_see:
+                media["coverage"] = visual["coverage"]
             return await asyncio.to_thread(self.knowledge.save, key, media)
         finally:
             cancelled.set()

@@ -99,10 +99,29 @@ def frame_bytes(stream, size):
     return b"".join(chunks)
 
 
+def content_bounds(row_peaks, column_peaks):
+    """Find a conservative content rectangle in normalized scan coordinates."""
+    bounds = []
+    for peaks in (column_peaks, row_peaks):
+        visible = np.flatnonzero(peaks > 12)
+        if len(visible) == 0:
+            return None
+        # Keep one scan pixel of padding at both edges before mapping to source pixels.
+        start = max(0, int(visible[0]) - 1) / len(peaks)
+        end = min(len(peaks), int(visible[-1]) + 2) / len(peaks)
+        bounds.append((start, end))
+    (left, right), (top, bottom) = bounds
+    width, height = right - left, bottom - top
+    if width < 0.2 or height < 0.2 or not 0.2 <= width * height <= 0.95:
+        return None
+    return left, top, right, bottom
+
+
 def scan_video(path, fps, duration, cancel):
     # At most 14,400 tiny frames; long/high-FPS sources cannot grow memory unboundedly.
     rate = min(fps, 24.0, 14400 / duration)
     means, rows, peaks = [], np.zeros(36), np.zeros(36)
+    column_peaks = np.zeros(64)
     scores, absolute, long_scores, ring = [], [], [], []
     lag = max(1, round(0.4 * rate))
     previous = None
@@ -144,6 +163,7 @@ def scan_video(path, fps, duration, cancel):
             means.append(float(value.mean()))
             rows += value.mean(axis=1)
             peaks = np.maximum(peaks, value.max(axis=1))
+            column_peaks = np.maximum(column_peaks, value.max(axis=0))
             at = index / rate
             if previous is not None:
                 scores.append((at, motion_score(previous, hsv)))
@@ -177,16 +197,21 @@ def scan_video(path, fps, duration, cancel):
         "interval": 1 / rate,
         "frames": len(means),
         "bars": round(bars, 3),
+        "content_bounds": content_bounds(peaks, column_peaks),
         "rate": rate,
         "scoring": {"mode": "mc", "cut_floor": round(motion_floor(normalized) * 255, 2)},
     }
 
 
-def extract_frames(path, targets, size, aspect, cancel):
+def extract_frames(path, targets, size, aspect, cancel, *, crop=None):
     """Decode sparse time windows in bounded batches, matching actual decoded PTS."""
     width, height = size
     width = max(1, min(width, int(height * aspect)))
     height = max(1, min(height, int(width / aspect)))
+    crop_filter = ""
+    if crop is not None:
+        x, y, w, h = crop
+        crop_filter = f"crop={w}:{h}:{x}:{y}:exact=1,"
     # At most 32 MiB of decoded pixels per batch, and no more than 8 targets.
     capacity = max(1, min(8, (32 * 1048576) // (width * height * 3)))
     batches = []
@@ -218,7 +243,7 @@ def extract_frames(path, targets, size, aspect, cancel):
                 "-filter_threads",
                 "1",
                 "-vf",
-                f"select='{'+'.join(selectors)}',scale={width}:{height}:flags=area,showinfo",
+                f"select='{'+'.join(selectors)}',{crop_filter}scale={width}:{height}:flags=area,showinfo",
                 "-fps_mode",
                 "passthrough",
                 "-pix_fmt",

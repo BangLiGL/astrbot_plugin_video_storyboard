@@ -53,6 +53,13 @@ Subtitle failure categories and retryable partial-result caching are independent
 implemented for bilibili-api-python and AstrBot's scoped SQLite knowledge store.
 No yt-dlp memo, DSH settings token, tier curves or localized host metadata is copied.
 
+v0.7.1 adapts the border-trimming and coverage concepts through upstream v0.7.6:
+Reference commit: 8b2b5007746bcc4aa42b47570ae896cd6cba3864
+https://github.com/SAOS-3624/dsh-video-storyboard/tree/v0.7.6
+decode.py retains Apache-2.0. The AstrBot adaptation uses temporal edge maxima
+from its existing bounded scan and measures coverage from distinct decoded PTS.
+It retains fixed grids and does not use DSH-specific CLI or billing alignment.
+
 Interaction/workflow research references (no source code copied):
 https://github.com/SodaCodeSave/astrbot_plugin_biliread
 https://github.com/RankoP-114/astrbot-plugin-bilibili-video-summary
