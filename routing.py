@@ -5,9 +5,14 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
-from .bilibili import BV, extract_refs
+from .bilibili import BV, extract_refs, normalize_share_links
 
 ASCII_URL = re.compile(r"https?://[A-Za-z0-9:/?#\[\]@!$&'()*+,;=._%~\-]+", re.I)
+BILI_SHARE_TITLE = re.compile(
+    r"【[^【】\r\n]{1,300}?[-－—]\s*(?:哔哩哔哩|bilibili)】\s*"
+    r"(?=https?://(?:b23\.tv|(?:[a-z0-9-]+\.)*bilibili\.com)/)",
+    re.I,
+)
 
 
 def kind(component):
@@ -31,7 +36,7 @@ def component_text(chain):
 
 
 def has_comment(text):
-    """Ignore only actual Bili URL spans, identifiers, mentions and punctuation."""
+    """Ignore Bilibili-generated share text alongside the link it labels."""
 
     def replace_url(match):
         host = (urlsplit(match.group()).hostname or "").lower()
@@ -39,7 +44,8 @@ def has_comment(text):
             return " "
         return match.group()
 
-    remaining = ASCII_URL.sub(replace_url, text)
+    remaining = BILI_SHARE_TITLE.sub(" ", normalize_share_links(text))
+    remaining = ASCII_URL.sub(replace_url, remaining)
     remaining = BV.sub(" ", remaining)
     remaining = re.sub(r"\[CQ:(?:at|reply),[^\]]*\]|<@!?\d+>", " ", remaining)
     return any(

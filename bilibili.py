@@ -17,6 +17,9 @@ from bilibili_api import Credential, exceptions, video
 
 BV = re.compile(r"(?<![A-Za-z0-9])BV[0-9A-Za-z]{10}(?![A-Za-z0-9])", re.I)
 URL = re.compile(r"https?://[^\s<>\"\\]+", re.I)
+ESCAPED_SHARE_SCHEME = re.compile(
+    r"(https?)\\:(?=//(?:b23\.tv|(?:[a-z0-9-]+\.)*bilibili\.com)/)", re.I
+)
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
 
 
@@ -72,12 +75,17 @@ def ensure_space(destination, required):
         raise DiskSpaceError("视频临时目录所在磁盘空间不足，请先释放空间后重试")
 
 
+def normalize_share_links(text):
+    return ESCAPED_SHARE_SCHEME.sub(r"\1:", text)
+
+
 def extract_refs(text):
     """Find BV IDs and Bilibili URLs while retaining explicit part numbers."""
+    text = normalize_share_links(str(text)[:24000])
     refs = []
     seen = set()
     covered = []
-    for match in URL.finditer(str(text)[:24000]):
+    for match in URL.finditer(text):
         url = match.group().rstrip("。，、；！？）,.)]")
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()
@@ -100,7 +108,7 @@ def extract_refs(text):
                     refs.append({"bvid": value, "page": page})
                     seen.add(key)
                 covered.append(match.span())
-    for match in BV.finditer(str(text)[:24000]):
+    for match in BV.finditer(text):
         if any(a <= match.start() < b for a, b in covered):
             continue
         value = "BV" + match.group()[2:]

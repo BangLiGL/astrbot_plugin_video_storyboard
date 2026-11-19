@@ -13,6 +13,7 @@ from astrbot.api.star import Context, Star, StarTools
 from .analysis import Analyzer
 from .bilibili import VideoError
 from .cooperation import stopped, wake_native_chat
+from .reply import clean_reply_chain, visible_reply
 from .routing import component_text, decide, parser_available, skip_parser
 
 FOLLOWUP = re.compile(
@@ -28,6 +29,7 @@ CHAT_GUIDANCE = """
 画面资料来自离散代表帧；coverage.largest_gap 标出最长的未采样时段，不能用来推断这段没有事件。
 不要展示后台分镜图、格子编号、分析清单、处理进度或供应商信息，也不要机械复述整份资料。
 用户追问具体内容时再展开，材料里没有的细节不要编造。
+最终输出只写用户应该看到的聊天正文。不要输出写作草稿、虚构的终端操作、文件清单或角色与走向分析。
 """
 
 EVIDENCE_MARKER = "<!-- astrbot_video_storyboard_evidence -->"
@@ -151,7 +153,8 @@ class VideoStoryboardPlugin(Star):
                     self.generate_long_notice(event, req, duration),
                     timeout=12,
                 )
-                text = " ".join(str(response.completion_text or "").split()).strip()[:120]
+                reply = visible_reply(str(response.completion_text or ""))
+                text = " ".join(reply.split())[:120]
             else:
                 return
             if text and not stopped(event):
@@ -167,6 +170,8 @@ class VideoStoryboardPlugin(Star):
         if not self.allowed(event) or stopped(event):
             return
         route = self.route(event)
+        if route["passive"] or route["refs"]:
+            self.guard_video_turn(event)
         if route["passive"]:
             return
         text = event.get_message_str()
@@ -178,11 +183,43 @@ class VideoStoryboardPlugin(Star):
             )
         if not refs and not remembered:
             return
+        if remembered:
+            self.guard_video_turn(event)
         event.set_extra("bili_chat_refs", refs)
         event.set_extra("bili_chat_memories", remembered)
         if route["takeover"]:
             skip_parser(event)
         wake_native_chat(self.context, self.config, event)
+
+    def guard_video_turn(self, event):
+        # Streaming chunks can be sent before AstrBot's response/decorating hooks.
+        event.set_extra("bili_chat_guard_reply", True)
+        event.set_extra("enable_streaming", False)
+
+    @filter.on_llm_response(priority=100001)
+    async def clean_video_completion(self, event: AstrMessageEvent, response):
+        if (
+            not event.get_extra("bili_chat_guard_reply")
+            or getattr(response, "role", None) != "assistant"
+            or getattr(response, "is_chunk", False)
+        ):
+            return
+        chain = getattr(response, "result_chain", None)
+        clean_reply_chain(chain)
+        if not getattr(chain, "chain", None):
+            text = response.completion_text
+            if text and (visible := visible_reply(text)) != text:
+                response.completion_text = visible
+
+    @filter.on_decorating_result(priority=-999998)
+    async def clean_video_delivery(self, event: AstrMessageEvent):
+        if event.get_extra("bili_chat_guard_reply"):
+            result = event.get_result()
+            if result is not None and result.is_llm_result():
+                clean_reply_chain(result)
+                reasoning = event.get_extra("_llm_reasoning_content")
+                if isinstance(reasoning, str) and visible_reply(reasoning) != reasoning:
+                    event.set_extra("_llm_reasoning_content", None)
 
     @filter.on_llm_request(priority=-1000000)
     async def inject_video_knowledge(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -190,6 +227,8 @@ class VideoStoryboardPlugin(Star):
         if not self.allowed(event) or stopped(event):
             return
         route = self.route(event)
+        if route["passive"] or route["refs"]:
+            event.set_extra("bili_chat_guard_reply", True)
         if route["passive"]:
             return
         parts = list(getattr(req, "extra_user_content_parts", None) or [])
@@ -242,6 +281,7 @@ class VideoStoryboardPlugin(Star):
             return
         if stopped(event):
             return
+        event.set_extra("bili_chat_guard_reply", True)
         payload = {"video_knowledge": records[:2], "unavailable": failures}
         evidence = EVIDENCE_MARKER + CHAT_GUIDANCE + "\n" + json.dumps(payload, ensure_ascii=False)
         event.set_extra("bili_chat_evidence", evidence)

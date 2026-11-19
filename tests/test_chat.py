@@ -52,6 +52,8 @@ def load_main():
     modules["astrbot.api.event"].filter = types.SimpleNamespace(
         event_message_type=identity,
         on_llm_request=identity,
+        on_llm_response=identity,
+        on_decorating_result=identity,
         EventMessageType=types.SimpleNamespace(ALL=1),
     )
     modules["astrbot.api.provider"].ProviderRequest = object

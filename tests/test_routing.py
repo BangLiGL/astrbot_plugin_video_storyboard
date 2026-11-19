@@ -32,6 +32,8 @@ class RoutingTests(unittest.TestCase):
             "  BV1GJ411x7h7  ",
             "https://www.bilibili.com/video/BV1GJ411x7h7?p=2&spm_id_from=1.2",
             "https://b23.tv/abc123",
+            "【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew",
+            r"【鸟巢开演唱会吧-哔哩哔哩】 https\://b23.tv/HXbtzew",
             "（BV1GJ411x7h7）",
         ]
         active = [
@@ -40,6 +42,9 @@ class RoutingTests(unittest.TestCase):
             "你看https://www.bilibili.com/video/BV1GJ411x7h7这个",
             "https://www.bilibili.com/video/BV1GJ411x7h7 好好笑",
             "BV1GJ411x7h7 😂",
+            "你怎么看【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew",
+            "【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew 😂",
+            "【你怎么看】 https://b23.tv/HXbtzew",
         ]
         for text in passive:
             with self.subTest(text=text):
@@ -52,6 +57,13 @@ class RoutingTests(unittest.TestCase):
                 self.assertFalse(decision["passive"])
                 self.assertTrue(decision["takeover"])
                 self.assertTrue(decision["refs"])
+
+    def test_copied_share_can_be_read_without_parser_or_when_quoted(self):
+        text = r"【鸟巢开演唱会吧-哔哩哔哩】 https\://b23.tv/HXbtzew"
+        expected = [{"short": "https://b23.tv/HXbtzew"}]
+        self.assertEqual(routing.decide(base.Event(text), False)["refs"], expected)
+        quoted = segment("Reply", chain=[segment("Plain", text=text)])
+        self.assertEqual(routing.decide(base.Event("", messages=[quoted]), True)["refs"], expected)
 
     def test_card_and_mention_do_not_become_comments(self):
         card = segment(
@@ -111,7 +123,9 @@ class CompatibilityChatTests(base.ChatTests):
     test_followup_uses_group_memory_after_restart = None
 
     async def test_bare_share_never_analyses_even_when_another_plugin_calls_llm(self):
-        event = base.Event("BV1GJ411x7h7")
+        event = base.Event("【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew")
+        parser = parser_entry()
+        event.set_extra("activated_handlers", [parser])
         self.instance.analyzer.understand = AsyncMock()
         await self.instance.on_message(event)
         request = types.SimpleNamespace(prompt=event.text, system_prompt="persona")
@@ -120,6 +134,7 @@ class CompatibilityChatTests(base.ChatTests):
         self.assertEqual(request.prompt, event.text)
         self.assertFalse(event.call_llm)
         self.assertFalse(event.is_at_or_wake_command)
+        self.assertEqual(event.get_extra("activated_handlers"), [parser])
 
     async def test_comment_takes_over_only_parser_and_copies_tools(self):
         event = base.Event("BV1GJ411x7h7 你怎么看")
