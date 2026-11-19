@@ -16,6 +16,12 @@ import test_chat as base
 routing = importlib.import_module(base.PACKAGE + ".routing")
 media = importlib.import_module(base.PACKAGE + ".media")
 
+WEB_SHARES = (
+    r"【老公被人妖勾引】 https\://www\.bilibili.com/video/BV1cnWR6DEfe/",
+    r"【【补档】MJ：我真的特别爱鹿（一种动物）】 "
+    r"https\://www\.bilibili.com/video/BV11Rsb6sEPy/?share_source=copy_web&vd_source=example",
+)
+
 
 def segment(type_, **values):
     return types.SimpleNamespace(type=type_, **values)
@@ -35,6 +41,8 @@ class RoutingTests(unittest.TestCase):
             "【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew",
             r"【鸟巢开演唱会吧-哔哩哔哩】 https\://b23.tv/HXbtzew",
             "（BV1GJ411x7h7）",
+            *WEB_SHARES,
+            WEB_SHARES[1].replace("\\", ""),
         ]
         active = [
             "BV1GJ411x7h7 你怎么看",
@@ -45,6 +53,9 @@ class RoutingTests(unittest.TestCase):
             "你怎么看【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew",
             "【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew 😂",
             "【你怎么看】 https://b23.tv/HXbtzew",
+            "你怎么看 " + WEB_SHARES[1],
+            WEB_SHARES[0] + " 😂",
+            "【看看】 https://example.com/video/BV1cnWR6DEfe/",
         ]
         for text in passive:
             with self.subTest(text=text):
@@ -64,6 +75,15 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(routing.decide(base.Event(text), False)["refs"], expected)
         quoted = segment("Reply", chain=[segment("Plain", text=text)])
         self.assertEqual(routing.decide(base.Event("", messages=[quoted]), True)["refs"], expected)
+
+    def test_escaped_web_share_preserves_video_part_when_quoted(self):
+        text = WEB_SHARES[1] + "&p=2"
+        expected = [{"bvid": "BV11Rsb6sEPy", "page": 2}]
+        self.assertEqual(routing.decide(base.Event(text), False)["refs"], expected)
+        quoted = segment("Reply", chain=[segment("Plain", text=text)])
+        self.assertEqual(
+            routing.decide(base.Event("怎么看", messages=[quoted]), True)["refs"], expected
+        )
 
     def test_card_and_mention_do_not_become_comments(self):
         card = segment(
@@ -123,18 +143,20 @@ class CompatibilityChatTests(base.ChatTests):
     test_followup_uses_group_memory_after_restart = None
 
     async def test_bare_share_never_analyses_even_when_another_plugin_calls_llm(self):
-        event = base.Event("【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew")
-        parser = parser_entry()
-        event.set_extra("activated_handlers", [parser])
         self.instance.analyzer.understand = AsyncMock()
-        await self.instance.on_message(event)
-        request = types.SimpleNamespace(prompt=event.text, system_prompt="persona")
-        await self.instance.inject_video_knowledge(event, request)
+        for text in ("【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew", *WEB_SHARES):
+            with self.subTest(text=text):
+                event = base.Event(text, messages=[segment("Plain", text=text)])
+                parser = parser_entry()
+                event.set_extra("activated_handlers", [parser])
+                await self.instance.on_message(event)
+                request = types.SimpleNamespace(prompt=event.text, system_prompt="persona")
+                await self.instance.inject_video_knowledge(event, request)
+                self.assertEqual(request.prompt, event.text)
+                self.assertFalse(event.call_llm)
+                self.assertFalse(event.is_at_or_wake_command)
+                self.assertEqual(event.get_extra("activated_handlers"), [parser])
         self.instance.analyzer.understand.assert_not_called()
-        self.assertEqual(request.prompt, event.text)
-        self.assertFalse(event.call_llm)
-        self.assertFalse(event.is_at_or_wake_command)
-        self.assertEqual(event.get_extra("activated_handlers"), [parser])
 
     async def test_comment_takes_over_only_parser_and_copies_tools(self):
         event = base.Event("BV1GJ411x7h7 你怎么看")

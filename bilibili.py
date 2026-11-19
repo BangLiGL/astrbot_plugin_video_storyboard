@@ -17,8 +17,8 @@ from bilibili_api import Credential, exceptions, video
 
 BV = re.compile(r"(?<![A-Za-z0-9])BV[0-9A-Za-z]{10}(?![A-Za-z0-9])", re.I)
 URL = re.compile(r"https?://[^\s<>\"\\]+", re.I)
-ESCAPED_SHARE_SCHEME = re.compile(
-    r"(https?)\\:(?=//(?:b23\.tv|(?:[a-z0-9-]+\.)*bilibili\.com)/)", re.I
+BILI_SHARE_URL_PREFIX = re.compile(
+    r"https?\\?://(?:b23\\?\.tv|(?:[a-z0-9-]+\\?\.)*bilibili\\?\.com)(?=/)", re.I
 )
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
 
@@ -76,7 +76,7 @@ def ensure_space(destination, required):
 
 
 def normalize_share_links(text):
-    return ESCAPED_SHARE_SCHEME.sub(r"\1:", text)
+    return BILI_SHARE_URL_PREFIX.sub(lambda match: match[0].replace("\\", ""), text)
 
 
 def extract_refs(text):

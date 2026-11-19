@@ -13,6 +13,11 @@ BILI_SHARE_TITLE = re.compile(
     r"(?=https?://(?:b23\.tv|(?:[a-z0-9-]+\.)*bilibili\.com)/)",
     re.I,
 )
+BILI_WEB_SHARE_TITLE = re.compile(
+    r"【(?:[^【】\r\n]|【[^【】\r\n]*】){1,300}】\s*"
+    r"(?=https?://(?:[a-z0-9-]+\.)*bilibili\.com/(?:video/)?BV[0-9A-Za-z]{10}(?![0-9A-Za-z]))",
+    re.I,
+)
 
 
 def kind(component):
@@ -45,6 +50,7 @@ def has_comment(text):
         return match.group()
 
     remaining = BILI_SHARE_TITLE.sub(" ", normalize_share_links(text))
+    remaining = BILI_WEB_SHARE_TITLE.sub(" ", remaining)
     remaining = ASCII_URL.sub(replace_url, remaining)
     remaining = BV.sub(" ", remaining)
     remaining = re.sub(r"\[CQ:(?:at|reply),[^\]]*\]|<@!?\d+>", " ", remaining)
