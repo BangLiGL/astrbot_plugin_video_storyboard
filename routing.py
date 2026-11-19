@@ -3,19 +3,23 @@
 import json
 import re
 import unicodedata
-from urllib.parse import urlsplit
 
-from .bilibili import BV, extract_refs, normalize_share_links
+from .bilibili import extract_refs, normalize_share_links
 
-ASCII_URL = re.compile(r"https?://[A-Za-z0-9:/?#\[\]@!$&'()*+,;=._%~\-]+", re.I)
-BILI_SHARE_TITLE = re.compile(
-    r"【[^【】\r\n]{1,300}?[-－—]\s*(?:哔哩哔哩|bilibili)】\s*"
-    r"(?=https?://(?:b23\.tv|(?:[a-z0-9-]+\.)*bilibili\.com)/)",
+# Match share syntax independently of the URLs the analyzer can download.
+BILI_SHARE_TARGET = (
+    r"(?<![A-Za-z0-9._@/?=&%:#-])"
+    r"(?:(?:https?://)?(?:b23\.tv|bili2233\.cn|(?:[a-z0-9-]+\.)*bilibili\.com)/|bilibili://)"
+    r"[A-Za-z0-9:/?#\[\]@!$&'()*+,;=._%~\-]+"
+)
+BILI_SHARE_URL = re.compile(
+    r"(?:【(?:[^【】\r\n]|【[^【】\r\n]*】){1,300}】\s*"
+    r"|\[[^\]\r\n]{1,300}\]\(\s*<?)?" + BILI_SHARE_TARGET,
     re.I,
 )
-BILI_WEB_SHARE_TITLE = re.compile(
-    r"【(?:[^【】\r\n]|【[^【】\r\n]*】){1,300}】\s*"
-    r"(?=https?://(?:[a-z0-9-]+\.)*bilibili\.com/(?:video/)?BV[0-9A-Za-z]{10}(?![0-9A-Za-z]))",
+BILI_VIDEO_CODE = re.compile(
+    r"(?<![A-Za-z0-9])(?:(?:bm)?BV[0-9A-Za-z]{10}|av[0-9]{6,})"
+    r"(?:[ \t]+[0-9]{1,3})?(?![A-Za-z0-9])",
     re.I,
 )
 
@@ -43,16 +47,8 @@ def component_text(chain):
 def has_comment(text):
     """Ignore Bilibili-generated share text alongside the link it labels."""
 
-    def replace_url(match):
-        host = (urlsplit(match.group()).hostname or "").lower()
-        if host == "b23.tv" or host == "bilibili.com" or host.endswith(".bilibili.com"):
-            return " "
-        return match.group()
-
-    remaining = BILI_SHARE_TITLE.sub(" ", normalize_share_links(text))
-    remaining = BILI_WEB_SHARE_TITLE.sub(" ", remaining)
-    remaining = ASCII_URL.sub(replace_url, remaining)
-    remaining = BV.sub(" ", remaining)
+    remaining = BILI_SHARE_URL.sub(" ", text)
+    remaining = BILI_VIDEO_CODE.sub(" ", remaining)
     remaining = re.sub(r"\[CQ:(?:at|reply),[^\]]*\]|<@!?\d+>", " ", remaining)
     return any(
         not char.isspace() and unicodedata.category(char)[0] not in {"P", "Z", "C"}
@@ -81,7 +77,7 @@ def parser_available(context, event):
     )
 
 
-def decide(event, compatibility):
+def decide(event, parser_enabled):
     chain = event.get_messages()
     plain = "\n".join(
         str(getattr(component, "text", "")) for component in chain if kind(component) == "plain"
@@ -89,8 +85,8 @@ def decide(event, compatibility):
     # Some adapters expose only message_str. Never treat card JSON as a comment.
     if not plain and not any(kind(component) in {"json", "reply", "video"} for component in chain):
         plain = event.get_message_str()
+    plain = normalize_share_links(plain)
     direct = extract_refs(plain)
-    shared = extract_refs(component_text(chain))
     quoted = []
     for component in chain:
         if kind(component) != "reply":
@@ -117,12 +113,12 @@ def decide(event, compatibility):
             if not reply_chain:
                 quoted.extend(extract_refs(getattr(component, "message_str", "") or ""))
     if quoted:
-        return {"refs": (direct + quoted)[:2], "passive": False, "takeover": compatibility}
-    if direct and (not compatibility or has_comment(plain)):
-        return {"refs": direct, "passive": False, "takeover": compatibility}
-    if compatibility and (direct or shared):
-        return {"refs": [], "passive": True, "takeover": False}
-    return {"refs": shared or direct, "passive": False, "takeover": False}
+        return {"refs": (direct + quoted)[:2], "passive": False, "takeover": parser_enabled}
+    if direct and has_comment(plain):
+        return {"refs": direct, "passive": False, "takeover": parser_enabled}
+    shared = normalize_share_links(component_text(chain) or plain)
+    passive = bool(direct or BILI_SHARE_URL.search(shared) or BILI_VIDEO_CODE.search(shared))
+    return {"refs": [], "passive": passive, "takeover": False}
 
 
 def skip_parser(event):

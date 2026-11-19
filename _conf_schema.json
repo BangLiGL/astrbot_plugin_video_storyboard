@@ -3,7 +3,6 @@
   "enabled_groups": {"type":"list","description":"启用群号","default":[],"hint":"留空为所有群。只填群号，不包含平台前缀。"},
   "private_chat": {"type":"bool","description":"同时在私聊启用","default":false},
   "chat_trigger_mode": {"type":"string","description":"聊天触发协作模式","default":"auto","options":["auto","passive"],"hint":"auto：独立使用时唤醒AstrBot原生聊天；检测到当前会话启用陪伴插件时只补充视频资料，由陪伴插件决定接话或沉默。passive：始终只给已有聊天请求补充资料，适合其他接管聊天的增强插件；需要原聊天流程本身被唤醒。不会自行创建聊天请求或解除其他插件的停止/禁用标记。"},
-  "parser_compatibility": {"type":"bool","description":"与 parser 分工处理B站消息","default":true,"hint":"检测到当前会话启用 astrbot_plugin_parser 时，纯链接、纯BV和分享卡片交给 parser；带评论的链接/BV、引用视频由本插件理解，并跳过该消息的 parser 自动解析。关闭后恢复本插件原有的自动读链接行为。"},
   "long_video_notice_enabled": {"type":"bool","description":"启用长视频等待提醒","default":true,"hint":"已有聊天请求读取未命中缓存的长视频时才提醒。方式可选人设LLM生成或直接发送固定文本；失败或超时不阻断理解。"},
   "long_video_notice_mode": {"type":"string","description":"长视频提醒方式","default":"llm","options":["llm","fixed"],"hint":"llm：确认并注入当前人格及其预设对话后，用当前聊天模型生成提醒。fixed：直接发送下方固定文本，不调用LLM，也不要求可解析的人格。旧配置默认保留LLM方式。"},
   "long_video_notice_prompt": {"type":"text","description":"LLM提醒自定义Prompt","default":"只按已注入的当前人格说一句简短自然的等待提醒：视频有点长，需要多看一会儿。只输出这句话，最多60字，不解释分镜、工具或供应商。","hint":"仅llm方式生效，最多取4000字。支持{duration_seconds}（总秒数）和{duration_minutes}（分钟，1位小数）。人格由插件单独注入，无需重复填写；仍保留读取前不得假装看完的提醒边界。"},

@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .analysis import Analyzer
 from .bilibili import VideoError
-from .cooperation import stopped, wake_native_chat
+from .cooperation import note_companion_video, stopped, wake_native_chat
 from .reply import clean_reply_chain, visible_reply
 from .routing import component_text, decide, parser_available, skip_parser
 
@@ -27,6 +27,7 @@ CHAT_GUIDANCE = """
 可以概述、表达感受、共情、吐槽或评价，取决于人设和语境，不必每次都做总结或强行搞笑。
 把作者的观点当作作者的观点；有证据才说看到/听到，缺少画面或字幕时明确承认。
 画面资料来自离散代表帧；coverage.largest_gap 标出最长的未采样时段，不能用来推断这段没有事件。
+video_storyboard 表示这轮有单独的视频证据：storyboard 来自代表帧，transcript 仅来自字幕或语音转写。请按这份材料回应当前视频。
 不要展示后台分镜图、格子编号、分析清单、处理进度或供应商信息，也不要机械复述整份资料。
 用户追问具体内容时再展开，材料里没有的细节不要编造。
 最终输出只写用户应该看到的聊天正文。不要输出写作草稿、虚构的终端操作、文件清单或角色与走向分析。
@@ -79,11 +80,7 @@ class VideoStoryboardPlugin(Star):
     def route(self, event):
         route = event.get_extra("bili_chat_route")
         if route is None:
-            route = decide(
-                event,
-                self.config.get("parser_compatibility", True)
-                and parser_available(self.context, event),
-            )
+            route = decide(event, parser_available(self.context, event))
             event.set_extra("bili_chat_route", route)
         return route
 
@@ -221,7 +218,8 @@ class VideoStoryboardPlugin(Star):
                 if isinstance(reasoning, str) and visible_reply(reasoning) != reasoning:
                     event.set_extra("_llm_reasoning_content", None)
 
-    @filter.on_llm_request(priority=-1000000)
+    # Run after v6's final prompt plan and v7's late video-state rewrite.
+    @filter.on_llm_request(priority=-1000001)
     async def inject_video_knowledge(self, event: AstrMessageEvent, req: ProviderRequest):
         """Provide evidence to the existing request; leave the persona and history intact."""
         if not self.allowed(event) or stopped(event):
@@ -232,11 +230,13 @@ class VideoStoryboardPlugin(Star):
         if route["passive"]:
             return
         parts = list(getattr(req, "extra_user_content_parts", None) or [])
+        source = event.get_extra("bili_chat_evidence_source")
         if any(
             EVIDENCE_MARKER
             in str(part.get("text", "") if isinstance(part, dict) else getattr(part, "text", ""))
             for part in parts
         ):
+            note_companion_video(parts, source)
             return
         refs = event.get_extra("bili_chat_refs")
         if refs is None:
@@ -247,6 +247,7 @@ class VideoStoryboardPlugin(Star):
             req.func_tool.remove_tool("parse_media_url")
         cached = event.get_extra("bili_chat_evidence")
         if cached:
+            note_companion_video(parts, source)
             req.extra_user_content_parts = [
                 *parts,
                 {"type": "text", "text": cached, "_no_save": True},
@@ -285,6 +286,12 @@ class VideoStoryboardPlugin(Star):
         payload = {"video_knowledge": records[:2], "unavailable": failures}
         evidence = EVIDENCE_MARKER + CHAT_GUIDANCE + "\n" + json.dumps(payload, ensure_ascii=False)
         event.set_extra("bili_chat_evidence", evidence)
+        if refs and records:
+            source = (
+                "storyboard" if any(record.get("visual") for record in records) else "transcript"
+            )
+            event.set_extra("bili_chat_evidence_source", source)
+            note_companion_video(parts, source)
         # Provider-facing only: future turns retrieve facts from our scoped knowledge store
         # instead of resending every old evidence block through AstrBot's saved history.
         req.extra_user_content_parts = [

@@ -376,7 +376,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.instance.analyzer.understand = AsyncMock(
             side_effect=bili.VideoError("没有读到视频内容，不能猜剧情")
         )
-        event = Event("BV1GJ411x7h7")
+        event = Event("这个视频 BV1GJ411x7h7 看得懂吗？")
         request = types.SimpleNamespace(prompt=event.text, system_prompt="人设")
         await self.instance.inject_video_knowledge(event, request)
         evidence = request.extra_user_content_parts[-1]["text"]
@@ -391,7 +391,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event.is_at_or_wake_command)
         self.config["enabled_groups"] = ["200"]
         for group in ("100", ""):
-            event = Event("BV1GJ411x7h7", group=group)
+            event = Event("看看 BV1GJ411x7h7", group=group)
             await self.instance.on_message(event)
             self.assertFalse(event.is_at_or_wake_command)
         a = self.instance.scope(Event("", group="200", bot="bot1"))

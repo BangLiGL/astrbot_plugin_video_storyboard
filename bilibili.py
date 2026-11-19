@@ -18,7 +18,8 @@ from bilibili_api import Credential, exceptions, video
 BV = re.compile(r"(?<![A-Za-z0-9])BV[0-9A-Za-z]{10}(?![A-Za-z0-9])", re.I)
 URL = re.compile(r"https?://[^\s<>\"\\]+", re.I)
 BILI_SHARE_URL_PREFIX = re.compile(
-    r"https?\\?://(?:b23\\?\.tv|(?:[a-z0-9-]+\\?\.)*bilibili\\?\.com)(?=/)", re.I
+    r"https?\\?://(?:b23\\?\.tv|bili2233\\?\.cn|(?:[a-z0-9-]+\\?\.)*bilibili\\?\.com)(?=/)",
+    re.I,
 )
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
 

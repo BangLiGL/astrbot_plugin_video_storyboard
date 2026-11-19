@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import importlib
+import json
 import types
 import unittest
 from unittest.mock import AsyncMock
@@ -140,6 +141,71 @@ class CooperationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Grounded video evidence", block["text"])
         self.instance.analyzer.understand.assert_awaited_once()
 
+    async def test_v7_updates_video_state_after_companion_finalizes_its_request(self):
+        event = self.event()
+        self.instance.analyzer.understand.return_value["visual"] = True
+        for existing_state, expected in (
+            ("absent", "external_storyboard"),
+            ("placeholder_only", "external_storyboard"),
+            ("sampled_frames", "sampled_frames"),
+        ):
+            with self.subTest(state=existing_state):
+                request = self.request()
+                block = types.SimpleNamespace(
+                    type="text", text=self.perception(existing_state), _no_save=True
+                )
+                request.extra_user_content_parts.append(block)
+                await self.instance.inject_video_knowledge(event, request)
+                self.assertEqual(len(request.extra_user_content_parts), 3)
+                self.assertIs(request.extra_user_content_parts[1], block)
+                self.assertTrue(block._no_save)
+                self.assertEqual(
+                    self.read_perception(block.text),
+                    {"video": expected, "video_storyboard": "storyboard", "image_count": 1},
+                )
+                before = block.text
+                await self.instance.inject_video_knowledge(event, request)
+                self.assertEqual(block.text, before)
+        self.instance.analyzer.understand.assert_awaited_once()
+
+    async def test_v7_distinguishes_transcripts_from_failed_or_old_evidence(self):
+        for scenario in ("transcript", "failed", "history"):
+            with self.subTest(scenario=scenario):
+                event = self.event()
+                request = self.request()
+                text = self.perception("placeholder_only")
+                block = {"type": "text", "text": text, "_no_save": True}
+                request.extra_user_content_parts.append(block)
+                if scenario == "failed":
+                    self.instance.analyzer.understand.side_effect = base.bili.VideoError(
+                        "video unavailable"
+                    )
+                elif scenario == "history":
+                    event = base.Event("刚才那个视频在讲什么？")
+                    self.instance.analyzer.knowledge.remember(
+                        self.instance.scope(event),
+                        "known",
+                        {"title": "之前的视频", "understanding": "保存的事实", "visual": True},
+                    )
+                await self.instance.inject_video_knowledge(event, request)
+                if scenario == "transcript":
+                    self.assertEqual(
+                        self.read_perception(block["text"])["video"], "external_transcript"
+                    )
+                else:
+                    self.assertEqual(block["text"], text)
+
+    @staticmethod
+    def perception(video_state):
+        details = {"environment": {"request_contents": {"video": video_state, "image_count": 1}}}
+        return "<companion_v2_context>\n" + json.dumps(details) + "\n</companion_v2_context>"
+
+    @staticmethod
+    def read_perception(text):
+        return json.loads(text.split("\n", 1)[1].rsplit("\n", 1)[0])["environment"][
+            "request_contents"
+        ]
+
     async def test_failed_video_evidence_is_also_temporary(self):
         self.instance.analyzer.understand.side_effect = base.bili.VideoError("video unavailable")
         event, request = self.event(), self.request()
@@ -238,6 +304,7 @@ class CooperationTests(unittest.IsolatedAsyncioTestCase):
         schema = json.loads((base.ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         self.assertEqual(schema["long_video_notice_mode"]["default"], "llm")
         self.assertEqual(schema["chat_trigger_mode"]["default"], "auto")
+        self.assertNotIn("parser_compatibility", schema)
         self.assertEqual(
             schema["long_video_notice_prompt"]["default"], base.main.DEFAULT_NOTICE_PROMPT
         )

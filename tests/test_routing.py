@@ -41,6 +41,21 @@ class RoutingTests(unittest.TestCase):
             "【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew",
             r"【鸟巢开演唱会吧-哔哩哔哩】 https\://b23.tv/HXbtzew",
             "（BV1GJ411x7h7）",
+            "BV1GJ411x7h7 12",
+            "av123456 2",
+            "bmBV1GJ411x7h7 3",
+            "【视频标题】 https://b23.tv/abc123",
+            "bili2233.cn/abc123",
+            "【视频标题】 https://bili2233.cn/abc123",
+            "【视频标题】 https://www.bilibili.com/video/av123456?p=2",
+            "www.bilibili.com/BV1GJ411x7h7?p=3",
+            "[视频标题](https://www.bilibili.com/video/BV1GJ411x7h7)",
+            "【动画动态】 https://t.bilibili.com/123456",
+            "【图文动态】 https://www.bilibili.com/opus/123456",
+            "【直播】 https://live.bilibili.com/123456",
+            "【收藏夹】 https://www.bilibili.com/favlist?fid=123456",
+            "【专栏】 https://www.bilibili.com/read/cv123456",
+            "bilibili://video/BV1GJ411x7h7",
             *WEB_SHARES,
             WEB_SHARES[1].replace("\\", ""),
         ]
@@ -52,34 +67,33 @@ class RoutingTests(unittest.TestCase):
             "BV1GJ411x7h7 😂",
             "你怎么看【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew",
             "【鸟巢开演唱会吧-哔哩哔哩】 https://b23.tv/HXbtzew 😂",
-            "【你怎么看】 https://b23.tv/HXbtzew",
+            "【你怎么看】 这段 https://b23.tv/HXbtzew",
             "你怎么看 " + WEB_SHARES[1],
             WEB_SHARES[0] + " 😂",
             "【看看】 https://example.com/video/BV1cnWR6DEfe/",
         ]
-        for text in passive:
-            with self.subTest(text=text):
-                decision = routing.decide(base.Event(text), True)
-                self.assertTrue(decision["passive"])
-                self.assertFalse(decision["refs"])
-        for text in active:
-            with self.subTest(text=text):
-                decision = routing.decide(base.Event(text), True)
-                self.assertFalse(decision["passive"])
-                self.assertTrue(decision["takeover"])
-                self.assertTrue(decision["refs"])
+        for parser_enabled in (False, True):
+            for text in passive:
+                with self.subTest(text=text, parser=parser_enabled):
+                    decision = routing.decide(base.Event(text), parser_enabled)
+                    self.assertEqual(decision, {"refs": [], "passive": True, "takeover": False})
+            for text in active:
+                with self.subTest(text=text, parser=parser_enabled):
+                    decision = routing.decide(base.Event(text), parser_enabled)
+                    self.assertFalse(decision["passive"])
+                    self.assertEqual(decision["takeover"], parser_enabled)
+                    self.assertTrue(decision["refs"])
 
-    def test_copied_share_can_be_read_without_parser_or_when_quoted(self):
+    def test_copied_share_can_be_read_when_quoted_even_without_parser(self):
         text = r"【鸟巢开演唱会吧-哔哩哔哩】 https\://b23.tv/HXbtzew"
         expected = [{"short": "https://b23.tv/HXbtzew"}]
-        self.assertEqual(routing.decide(base.Event(text), False)["refs"], expected)
         quoted = segment("Reply", chain=[segment("Plain", text=text)])
+        self.assertEqual(routing.decide(base.Event("", messages=[quoted]), False)["refs"], expected)
         self.assertEqual(routing.decide(base.Event("", messages=[quoted]), True)["refs"], expected)
 
     def test_escaped_web_share_preserves_video_part_when_quoted(self):
         text = WEB_SHARES[1] + "&p=2"
         expected = [{"bvid": "BV11Rsb6sEPy", "page": 2}]
-        self.assertEqual(routing.decide(base.Event(text), False)["refs"], expected)
         quoted = segment("Reply", chain=[segment("Plain", text=text)])
         self.assertEqual(
             routing.decide(base.Event("怎么看", messages=[quoted]), True)["refs"], expected
@@ -91,7 +105,7 @@ class RoutingTests(unittest.TestCase):
         )
         event = base.Event("[JSON分享卡片]", messages=[segment("At", qq="bot1"), card])
         self.assertTrue(routing.decide(event, True)["passive"])
-        self.assertTrue(routing.decide(event, False)["refs"])
+        self.assertTrue(routing.decide(event, False)["passive"])
 
     def test_reply_to_video_or_original_link_triggers(self):
         video = segment("Video", file="/cache/video.mp4", url="https://example.com/v.mp4")
@@ -180,11 +194,17 @@ class CompatibilityChatTests(base.ChatTests):
         self.assertEqual(original.names, ["parse_media_url", "weather"])
         self.assertEqual(req.system_prompt, "人设")
 
-    async def test_compatibility_off_restores_original_bare_bv_trigger(self):
+    async def test_legacy_config_cannot_disable_the_parser_split(self):
         self.config["parser_compatibility"] = False
         event = base.Event("BV1GJ411x7h7")
         await self.instance.on_message(event)
+        self.assertFalse(event.is_at_or_wake_command)
+        self.assertTrue(self.instance.route(event)["passive"])
+        event = base.Event("BV1GJ411x7h7 你怎么看")
+        event.set_extra("activated_handlers", [parser_entry()])
+        await self.instance.on_message(event)
         self.assertTrue(event.is_at_or_wake_command)
+        self.assertEqual(event.get_extra("activated_handlers"), [])
 
     async def test_notice_uses_current_chat_persona_once_and_preserves_history(self):
         event = base.Event("看看视频")
